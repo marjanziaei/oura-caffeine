@@ -1,0 +1,24 @@
+# Secrets: real environment files (the template .env.example is committed)
+.env
+.env.*
+!.env.example
+
+# OAuth tokens saved locally (token file, its lock file, and temp files from atomic writes)
+.oura_tokens*
+*token*.json
+tokens/
+*.token
+
+# Local database (personal health data) and SQLite's side files
+*.db
+*.db-*
+
+# Virtual environment
+.venv/
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
