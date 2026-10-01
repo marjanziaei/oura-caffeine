@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS daily_log (
     evening_date       TEXT PRIMARY KEY CHECK (date(evening_date) IS evening_date),
     caffeine_after_5pm TEXT NOT NULL DEFAULT 'unanswered'
                        CHECK (caffeine_after_5pm IN ('yes', 'no', 'unanswered')),
-    tag                TEXT CHECK (tag IN ('alcohol', 'illness', 'travel', 'other'))
+    -- NULL = not answered yet; 'none' = answered "Nothing unusual".
+    tag                TEXT CHECK (tag IN ('alcohol', 'illness', 'travel', 'other', 'none'))
 );
 
 -- Each night paired with the answer about the evening before it.

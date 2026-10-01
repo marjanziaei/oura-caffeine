@@ -92,3 +92,29 @@ To total all napping in the day before night D, add night D−1's `post_wake_nap
 - each column matches an independent recount from the stored bedtimes.
 
 **Also:** older rows kept empty new columns because the sync only refreshes the last 30 days. `python sync_oura.py --days N` fills in older rows.
+
+## 7. Telegram bot: dates come from the question, and only my chat is accepted
+
+**Date:** 2026-10-01
+
+All dates and times below are made-up examples.
+
+**Decisions:**
+- **The evening date travels with the question.** Each button carries its evening in its hidden data, e.g. `caffeine:2030-01-10:yes`, set when the question is sent. An answer tapped at 00:30 on Jan 11, or days later on an old message, is saved to Jan 10. The time of the tap is never used to pick the date.
+- **21:00 is Prague wall-clock time.** The scheduled time carries the `Europe/Prague` time zone, so it stays at 21:00 local when the clocks change. The underlying UTC time moves from 19:00 to 20:00 at the October change. A plain `21:00` with no time zone would have meant 21:00 UTC: 23:00 in summer, 22:00 in winter.
+- **A catch-up check every 10 minutes** covers a laptop that's asleep or a bot that isn't running at 21:00. It sends the evening's question if it's past 21:00 Prague time and the question hasn't been sent yet. After midnight it stops, so a missed evening is skipped rather than sent late with a confusing date.
+- **"Asked" is recorded as the `daily_log` row itself**, created as `'unanswered'` only after Telegram confirms the message was sent. A failed send is therefore retried, and an asked-but-unanswered evening is stored explicitly, never as "no".
+- **Corrections:** the buttons stay on the message, with ✓ on the current answer. Tapping another one overwrites it. The "Anything unusual" follow-up is only sent the first time an evening's caffeine question is answered, so corrections don't send it again.
+- **`tag` NULL vs `'none'`:** NULL means the follow-up wasn't answered, and `'none'` means "Nothing unusual". Storing "Nothing unusual" as NULL would have repeated the unanswered-means-no mistake. The table was recreated to allow `'none'`; it had no rows yet.
+- **Only my chat:** a gatekeeper handler runs before all others and drops any message or button tap whose user or chat isn't my `TELEGRAM_CHAT_ID`. Anyone can find a bot by its username, so this is required, not optional.
+- **Token hygiene:** `httpx`, the HTTP library used by the Telegram library, logs request URLs, and Telegram URLs contain the bot token. Its logging is turned down, and `find_chat_id.py` never prints URLs in errors.
+
+**How I verified it:**
+- The library's real 21:00 job fires at 21:00 Prague time on every day across both clock changes (Oct 2026 and Mar 2027).
+- Simulated taps against a scratch database covered:
+  - a tap at 00:30 going to the previous evening
+  - corrections
+  - tapping the already-selected button again
+  - old messages
+  - strangers, and my own account in a group chat, being ignored
+  - a failed send being retried
