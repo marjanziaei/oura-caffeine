@@ -63,3 +63,32 @@ Illustration with made-up example values:
 - "Unanswered" is stored explicitly as `'unanswered'` and the column rejects NULL, so a missing answer can never be mistaken for "no". Nights with no log row also show as `'unanswered'` in the view.
 
 **Why it matters:** An off-by-one date would pair each answer with the wrong night. The analysis would still produce clean-looking numbers, just about the wrong nights. The same goes for counting unanswered days as "no", which would dilute the "no" group with nights I know nothing about.
+
+## 6. Broken nights are combined; naps are split into before and after the night
+
+**Date:** 2026-10-01
+
+All times below are made-up examples, not my data.
+
+**What happened:** Oura can split one night into several `long_sleep` periods when I'm awake for a long stretch in the middle, e.g. asleep 23:00–02:30, awake, asleep again 04:30–08:50. The sync used to keep only the longest part, without saying so. Separately, Oura records short `sleep` and `rest` periods (dozing, naps) that the sync ignored entirely.
+
+**Decision 1, broken nights:** combine all `long_sleep` parts of an Oura day into one night: earliest start (23:00), latest end (08:50), and the lowest heart rate across the parts. Store the number of parts in `long_sleep_count`, and log a warning whenever there's more than one.
+- *Why not take the longest part:* it throws away part of the night. If caffeine fragments my sleep, that's exactly the effect I'd be hiding.
+- *Trade-off:* the awake gap sits inside the start-to-end span, so bedtime-to-wake time overstates time asleep. `long_sleep_count > 1` marks those nights so analysis can treat them separately.
+
+**Decision 2, naps:** minutes asleep in an Oura day's non-`long_sleep` periods are stored in three columns:
+- `pre_sleep_nap_minutes`: periods that end before the night, e.g. dozing 19:00–19:30 the evening before a 23:00 bedtime. These can affect that night, because they take the edge off my tiredness.
+- `post_wake_nap_minutes`: periods that start after waking, e.g. a nap at 15:00 the next afternoon. These can't affect that night.
+- `adjacent_sleep_minutes`: periods ending or starting within 30 minutes of the night, e.g. dozing 22:40–22:50 before a 23:00 bedtime. These are falling asleep or waking up, not naps.
+
+A day without a main sleep has no "before" or "after", so its three columns stay empty and the sync logs a warning.
+
+To total all napping in the day before night D, add night D−1's `post_wake_nap_minutes` to night D's `pre_sleep_nap_minutes`.
+
+**Revised the same day:** the first version stored a single `nap_minutes` total, taken straight from my original request rather than chosen deliberately. But Oura labels evening dozing with the *next* day, so one total per Oura day mixed naps that could affect the night (the evening before it) with naps that couldn't (the afternoon after it). Both sit under the same label, so the analysis couldn't tell them apart. Splitting them at sync time, while the period timestamps are at hand, is cheap. Reconstructing the split later would mean storing every period.
+
+**How I verified it:** made-up test cases gave the expected results: a two-part night, dozing inside the gap, periods exactly 30 and 30.5 minutes from the night, a deleted period, and a day with no main sleep. On all 62 nights of real data:
+- the three columns add up to Oura's total for the other periods
+- each column matches an independent recount from the stored bedtimes.
+
+**Also:** older rows kept empty new columns because the sync only refreshes the last 30 days. `python sync_oura.py --days N` fills in older rows.
