@@ -26,7 +26,9 @@ CREATE TABLE IF NOT EXISTS daily_log (
     caffeine_after_5pm TEXT NOT NULL DEFAULT 'unanswered'
                        CHECK (caffeine_after_5pm IN ('yes', 'no', 'unanswered')),
     -- NULL = not answered yet; 'none' = answered "Nothing unusual".
-    tag                TEXT CHECK (tag IN ('alcohol', 'illness', 'travel', 'other', 'none'))
+    tag                TEXT CHECK (tag IN ('alcohol', 'illness', 'travel', 'other', 'none')),
+    -- 1 = entered by hand after the fact, not via the bot on the evening (see DECISIONS.md #8).
+    backfilled         INTEGER NOT NULL DEFAULT 0 CHECK (backfilled IN (0, 1))
 );
 
 -- Each night paired with the answer about the evening before it.
@@ -54,6 +56,9 @@ ADDED_COLUMNS = {
         "pre_sleep_nap_minutes": "INTEGER",
         "post_wake_nap_minutes": "INTEGER",
         "adjacent_sleep_minutes": "INTEGER",
+    },
+    "daily_log": {
+        "backfilled": "INTEGER NOT NULL DEFAULT 0 CHECK (backfilled IN (0, 1))",
     },
 }
 

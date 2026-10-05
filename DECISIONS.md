@@ -118,3 +118,18 @@ All dates and times below are made-up examples.
   - old messages
   - strangers, and my own account in a group chat, being ignored
   - a failed send being retried
+
+## 8. Backfilled answers are flagged
+
+**Date:** 2026-10-05
+
+All dates below are made-up examples.
+
+**What happened:** The bot missed a couple of evenings (e.g. Jan 11 and Jan 12), so I filled them in by hand once, from memory, days later. This was a one-off; the bot didn't get a backfill feature.
+
+**Decision:**
+- `daily_log` has a `backfilled` column: `1` for answers entered after the fact, `0` (the default) for answers given through the bot on the evening. It rejects NULL and anything other than 0 or 1.
+- Only evenings I actually remembered were filled in. Anything I didn't remember stays unanswered, never a guessed "no".
+- Backfilled rows were only inserted where no row existed, so no bot answer was overwritten.
+
+**Why it matters:** An answer recalled days later is less reliable than one given that evening. And if I remember a night *because* I slept badly, the recalled answers aren't a random sample. Flagging them lets the analysis be run with and without them; if a result only holds when they're included, it's not a result I trust.
