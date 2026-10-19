@@ -152,7 +152,7 @@ All names, paths and times below are generic examples, not my real setup.
 - **Oura token:** refresh tokens are single use, so only one machine may hold a live one (see decision 2). Order of steps: stop everything on the laptop, copy the token file, compare checksums, rename the laptop's copy to `.oura_tokens.json.moved-to-server`, and only then start anything on the server. A laptop script now stops with "no saved tokens" instead of spending the token. The Telegram bot token is the same: two machines polling it would fight, so the laptop must not run the bot again.
 - **Files copied by hand** (not in git): `.env`, the token file and the database, then set to owner-only (0600), in a folder only the owner can open (0700).
 
-**Open:** the database has no backup yet. Options are being compared.
+**Open:** the database has no backup yet. See decision 11.
 
 ## 10. First connection: the server's host key was accepted on first use
 
@@ -165,3 +165,25 @@ All names, paths and times below are generic examples, not my real setup.
 **What the risk is:** if someone had intercepted that first connection, my laptop would trust their key. The server would then be an impostor and could capture what I sent to it. Later connections would not reveal it, because SSH only warns when the key *changes*.
 
 **Why it matters / how to undo it:** the first thing sent after that was my public key (harmless), but later I sent real secrets to the server. If I ever want certainty, I can compare the fingerprint in the provider's panel with the one in `~/.ssh/known_hosts` (`ssh-keygen -F <host> -l`). If they differ, I would rotate the Telegram bot token and the Oura client secret and re-run `login.py`.
+
+## 11. Backup: the laptop pulls a copy of the database each day
+
+**Date:** 2026-10-19
+
+All names and times below are generic examples.
+
+**Options considered:** (A) pull to my laptop over SSH; (B) encrypted push to cloud storage; (C) the provider's snapshot add-on.
+
+**Decision: A.** No third party ever holds the data, and it costs nothing. The weakness is that it only runs while the laptop is on. A missed run happens when the laptop wakes up, and the 30 kept copies cover a short gap.
+
+**How it works:**
+- **Dedicated key:** the laptop uses its own SSH key with no passphrase, so a scheduled job can run unattended. On the server that key is locked with `restrict,command="..."`, so it can do exactly one thing: print a copy of the database. It cannot open a shell, forward ports or read other files. My normal key keeps its passphrase.
+- **Consistent copy:** the server makes it with SQLite's `.backup`, which is safe while the bot is writing. A plain file copy could capture a half-written page. The copy goes to stdout and the temporary file is deleted straight away.
+- **Checked before it's kept:** the laptop runs an integrity check and confirms both tables exist and have rows. A bad download is discarded and logged as a failure, and never replaces a good copy.
+- **Retention:** dated files, newest 30 kept, in a folder only I can open (0700, files 0600). Only files with the backup's own name pattern are ever pruned.
+- **Schedule:** daily at 14:00, an hour after the first sync, via a macOS launchd job. launchd has no per-job time zone, so this follows the laptop's own zone (Europe/Prague). That is a known gap against my rule that schedules name their zone. If the laptop is asleep at 14:00, the job runs when it wakes.
+- **Only the database is backed up.** The token file and `.env` are not, because a restored old token would be dead anyway (single use), and the secrets can be re-created.
+
+**How I verified it:** ran it for real; the copy passed the integrity check. Asking the backup key for a shell returned database bytes and never ran my command. The first launchd run exited with an error even though the copy succeeded: macOS `head` rejects a negative line count in the prune step. Fixed and re-run clean. The prune logic was tested on 33 empty fake files.
+
+**Not yet tested:** restoring from a copy onto a fresh server, and the job's behaviour after a laptop reboot.
