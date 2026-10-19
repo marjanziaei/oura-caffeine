@@ -62,8 +62,8 @@ Last 7 evenings: kept the 5pm rule on 5 of 6 answered evenings; 1 unanswered.
 
 Confidence: HINT (sleep score, answers given on the evening only): a first look only; a group has too few nights to say more.
 
-Sleep score was 6.67 points lower on nights with caffeine after 5pm, which is worse. The 95% range for the gap runs from 13.79 points lower to 0.46 points higher, so no difference at all cannot be ruled out. Based on 3 nights with caffeine after 5pm and 11 nights without.
-Lowest heart rate (secondary): 3.73 bpm higher on nights with caffeine, which is worse (hint).
+Sleep score was 7 points lower on nights with caffeine after 5pm, which is worse. The 95% range for the gap runs from 14 points lower to less than 1 point higher, so no difference at all cannot be ruled out. Based on 3 nights with caffeine after 5pm and 11 nights without.
+Lowest heart rate (secondary): 3.7 bpm higher on nights with caffeine, which is worse (hint).
 
 This is only a first look, and more nights would help. This shows a link, not a cause, and a steady trend in your health over time could be mistaken for a caffeine effect.
 
@@ -78,7 +78,7 @@ Last 7 evenings: kept the 5pm rule on 5 of 6 answered evenings; 1 unanswered.
 
 Confidence: HINT (sleep score, answers given on the evening only): a first look only; a group has too few nights to say more.
 
-Sleep score was 6.67 points lower on nights with caffeine after 5pm, which is worse. The 95% range for the gap runs from 13.79 points lower to 0.46 points higher, so no difference at all cannot be ruled out. Based on 3 nights with caffeine after 5pm and 11 nights without. Lowest heart rate (secondary): 3.73 bpm higher on nights with caffeine, which is worse (hint). Nights used: 14 of 15. 1 had no answer. This shows a link, not a cause, and a steady trend in your health over time could be mistaken for a caffeine effect.
+Sleep score was 7 points lower on nights with caffeine after 5pm, which is worse. The 95% range for the gap runs from 14 points lower to less than 1 point higher, so no difference at all cannot be ruled out. Based on 3 nights with caffeine after 5pm and 11 nights without. Lowest heart rate (secondary): 3.7 bpm higher on nights with caffeine, which is worse (hint). Nights used: 14 of 15. 1 had no answer. This shows a link, not a cause, and a steady trend in your health over time could be mistaken for a caffeine effect.
 
 (Plain summary built from the data without AI: the AI explanation was unavailable or failed its checks.)
 ```
@@ -102,7 +102,7 @@ Also worth a look: [how the comparison is calculated and labelled](DECISIONS.md#
 
 ## Testing
 
-- **98 automated tests** (32 for the statistics and database, 66 for the message), about a second to run, no network. One of them checks that the sample message in this README is exactly what the code produces.
+- **107 automated tests** (32 for the statistics and database, 75 for the message), about a second to run, no network. One of them checks that the sample message in this README is exactly what the code produces.
 - **A fake AI only.** The real API client is blocked during tests, and the test run fails outright if any test tries to reach it.
 - **The tests were themselves tested.** More than 40 times I deliberately broke the code (flipped a sign, switched the number check off, removed the retry, let a date into the payload, and so on) and confirmed that a test failed. A few survived at first, which showed real gaps: for example, a worked example with equal group sizes could not tell Welch's interval from the pooled one. Each gap became a new test.
 

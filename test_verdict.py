@@ -310,17 +310,22 @@ class CoreSentenceTests(unittest.TestCase):
         self.assertIn("Sleep score was the same on both kinds of night.", verdict.core_sentence(make_analysis("none")))
 
     def test_numbers_and_direction_come_straight_from_the_data(self):
+        from decimal import ROUND_HALF_UP, Decimal
         for kind in ("hint", "finding", "better", "noisy", "none", "flip", "only_backfilled_caffeine", "empty"):
             a = make_analysis(kind)
             text = verdict.core_sentence(a)
-            self.assertEqual(verdict.unknown_numbers(text, verdict.to_payload(a)), [], kind)
+            # "less than 1 point" quotes the size of the rounding step, not a value from the data.
+            checked = text.replace("less than 1", "")
+            self.assertEqual(verdict.unknown_numbers(checked, verdict.to_payload(a)), [], kind)
             diff = verdict.primary(a)["difference"]
             if diff:
-                self.assertEqual(f"{abs(diff):g} points {'lower' if diff < 0 else 'higher'} on nights" in text, True, kind)
+                shown = Decimal(str(abs(diff))).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+                words = f"{shown} point{'' if shown == 1 else 's'}" if shown else "less than 1 point"
+                self.assertIn(f"{words} {'lower' if diff < 0 else 'higher'} on nights", text, kind)
                 self.assertIn(f"which is {verdict.primary(a)['caffeine_nights_look']}", text)
 
     def test_heart_rate_line(self):
-        self.assertIn("Lowest heart rate (secondary): 10 bpm higher on nights with caffeine, which is worse (finding).",
+        self.assertIn("Lowest heart rate (secondary): 10.0 bpm higher on nights with caffeine, which is worse (finding).",
                       verdict.heart_rate_line(make_analysis("finding")))
         self.assertIn("lower on nights with caffeine, which is better", verdict.heart_rate_line(make_analysis("better")))
         self.assertIn("the same on both kinds of night", verdict.heart_rate_line(make_analysis("none")))
@@ -366,6 +371,84 @@ class HabitLineTests(unittest.TestCase):
         self.assertIn("3", m["problems"][0][0])
         self.assertNotIn("You kept", m["text"])
         self.assertTrue(m["text"].startswith(verdict.habit_line(a)))      # the first line is always the code's
+
+
+def tiny_analysis(diff, low, high, hr=None, look="worse", n=(5, 5)):
+    """Just enough of an analysis for the code-written lines, to test rounding on exact values."""
+    def comp(metric, unit, difference, ci, primary_):
+        return {"metric": metric, "view": "without_backfilled", "primary": primary_, "unit": unit,
+                "better_direction": "higher" if metric == "sleep_score" else "lower",
+                "caffeine": {"n": n[0], "mean": 70.0}, "no_caffeine": {"n": n[1], "mean": 80.0},
+                "difference": difference, "caffeine_nights_look": look, "label": "hint",
+                "ci95": None if ci is None else {"low": ci[0], "high": ci[1], "excludes_zero": not ci[0] <= 0 <= ci[1]}}
+    return {"comparisons": [comp("sleep_score", "points", diff, None if low is None else (low, high), True),
+                            comp("lowest_heart_rate", "bpm", hr, None, False)]}
+
+
+class RoundingTests(unittest.TestCase):
+    """Sleep score differences and ranges in whole points; heart rate to one decimal; half-up."""
+
+    def core(self, diff, low=None, high=None, **kw):
+        return verdict.core_sentence(tiny_analysis(diff, low, high, **kw))
+
+    def hr(self, value):
+        return verdict.heart_rate_line(tiny_analysis(-1.0, None, None, hr=value))
+
+    def test_sleep_score_is_shown_in_whole_points(self):
+        self.assertIn("was 7 points lower", self.core(-6.67, -13.79, -0.2))
+        self.assertIn("was 7 points higher", self.core(6.67, 0.2, 13.79, look="better"))
+        for text in (self.core(-6.67, -13.79, 0.46), self.core(-15.0, -20.4, -9.6), self.core(12.34, 5.5, 19.5)):
+            self.assertNotRegex(text, r"\d\.\d", text)                     # no decimals anywhere in the result
+
+    def test_halves_round_up_not_to_even(self):
+        # Python's round(6.5) is 6 and round(0.5) is 0; the message must say 7 and 1.
+        self.assertIn("was 7 points lower", self.core(-6.5))
+        self.assertIn("was 1 point lower", self.core(-0.5))
+        self.assertIn("was 6 points lower", self.core(-6.49))
+        self.assertIn("was 3 points higher", self.core(2.5, look="better"))
+
+    def test_one_point_is_singular(self):
+        self.assertIn("was 1 point lower", self.core(-1.2))
+        self.assertIn("was 2 points lower", self.core(-1.5))
+
+    def test_a_tiny_difference_is_never_shown_as_zero_points(self):
+        text = self.core(-0.3, -0.45, -0.1)
+        self.assertIn("was less than 1 point lower on nights with caffeine after 5pm, which is worse", text)
+        self.assertNotIn(" 0 points", text)
+        self.assertIn("The 95% range for the gap is less than 1 point lower.", text)         # said once, singular
+        self.assertNotIn("less than 1 to", text)
+
+    def test_ranges(self):
+        self.assertIn("The 95% range for the gap is 4 to 14 points lower.", self.core(-9.0, -13.6, -4.2))
+        self.assertIn("The 95% range for the gap is 3 to 9 points higher.", self.core(6.0, 2.6, 8.5, look="better"))
+        # a range that crosses zero keeps both ends and still says so
+        self.assertIn("runs from 14 points lower to less than 1 point higher, so no difference at all cannot be "
+                      "ruled out.", self.core(-6.67, -13.79, 0.46))
+        self.assertIn("runs from 3 points lower to 2 points higher", self.core(-0.5, -2.6, 2.4))
+
+    def test_an_exact_zero_end_is_called_no_difference(self):
+        self.assertIn("runs from 5 points lower to no difference", self.core(-2.0, -5.0, 0.0))
+
+    def test_heart_rate_has_exactly_one_decimal(self):
+        self.assertIn("3.7 bpm higher", self.hr(3.73))
+        self.assertIn("3.8 bpm higher", self.hr(3.75))                 # half up
+        self.assertIn("3.0 bpm higher", self.hr(3.0))                  # the decimal is kept
+        self.assertIn("10.0 bpm lower", self.hr(-10.04))
+        self.assertIn("0.1 bpm higher", self.hr(0.05))                 # 0.05 rounds up to 0.1
+        self.assertIn("less than 0.1 bpm higher", self.hr(0.04))
+        self.assertIn("the same on both kinds of night", self.hr(0))
+
+    def test_rounding_is_for_display_only(self):
+        a = make_analysis("finding")
+        self.assertEqual(verdict.primary(a)["difference"], -15.0)       # the data layer is untouched
+        payload = verdict.to_payload(make_analysis("noisy"))
+        self.assertRegex(json.dumps(payload), r"\d+\.\d\d")           # the model still gets the two decimals
+
+    def test_the_message_shows_no_two_decimal_numbers_for_score_or_heart_rate(self):
+        for kind in ("hint", "finding", "better", "noisy", "flip"):
+            a = make_analysis(kind)
+            for text in (verdict.core_sentence(a), verdict.heart_rate_line(a)):
+                self.assertNotRegex(text, r"\d\.\d\d", text)
 
 
 class BuildMessageTests(unittest.TestCase):

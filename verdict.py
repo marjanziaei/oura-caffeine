@@ -287,8 +287,34 @@ def _nights(n):
     return f"{n} night" + ("" if n == 1 else "s")
 
 
-def _gap(x, unit):
-    return f"{_num(abs(x))} {unit} {'lower' if x < 0 else 'higher'}"
+# Display rounding for the lines the code writes (the analysis JSON keeps its two decimals).
+# A sleep score is a whole number, so differences and ranges are shown in whole points; heart rate keeps one
+# decimal. Half-up, like the number check (Python's round() would round halves to even).
+PLACES = {"sleep_score": 0, "lowest_heart_rate": 1}
+
+
+def _rounded(x, places):
+    return abs(Decimal(str(x))).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+
+
+def _unit(unit, value):
+    return "point" if unit == "points" and value == 1 else unit
+
+
+def _mag(x, places):
+    """A size as shown: '7', '3.7', or 'less than 1' / 'less than 0.1' when it rounds to nothing."""
+    r = _rounded(x, places)
+    return f"{r:.{places}f}" if r else f"less than {Decimal(1).scaleb(-places):.{places}f}"
+
+
+def _gap(x, unit, places):
+    """'7 points lower', '3.7 bpm higher', 'less than 1 point lower'; 'no difference' for exactly zero.
+    A tiny non-zero value is never shown as '0 points'."""
+    if x == 0:
+        return "no difference"
+    r = _rounded(x, places)
+    least = Decimal(1).scaleb(-places)
+    return f"{_mag(x, places)} {_unit(unit, r or least)} {'lower' if x < 0 else 'higher'}"
 
 
 def habit_line(analysis):
@@ -307,23 +333,29 @@ def core_sentence(analysis):
     c = primary(analysis)
     metric, unit = METRIC_WORDS[c["metric"]], c["unit"]
     cn, nn, diff, ci = c["caffeine"], c["no_caffeine"], c["difference"], c["ci95"]
+    places = PLACES[c["metric"]]
     basis = f"Based on {_nights(cn['n'])} with caffeine after 5pm and {_nights(nn['n'])} without."
     if diff is None:
         return f"Not enough data yet to compare {metric}. {basis}"
     if diff == 0:
         head = f"{metric.capitalize()} was the same on both kinds of night."
     else:
-        head = (f"{metric.capitalize()} was {_gap(diff, unit)} on nights with caffeine after 5pm, "
+        head = (f"{metric.capitalize()} was {_gap(diff, unit, places)} on nights with caffeine after 5pm, "
                 f"which is {c['caffeine_nights_look']}.")
     if ci is None:
         span = "Not enough data yet for a 95% range."
     elif ci["low"] <= 0 <= ci["high"]:
-        span = (f"The 95% range for the gap runs from {_gap(ci['low'], unit)} to {_gap(ci['high'], unit)}, "
-                "so no difference at all cannot be ruled out.")
-    elif ci["high"] < 0:
-        span = f"The 95% range for the gap is {_num(abs(ci['high']))} to {_num(abs(ci['low']))} {unit} lower."
+        span = (f"The 95% range for the gap runs from {_gap(ci['low'], unit, places)} to "
+                f"{_gap(ci['high'], unit, places)}, so no difference at all cannot be ruled out.")
     else:
-        span = f"The 95% range for the gap is {_num(ci['low'])} to {_num(ci['high'])} {unit} higher."
+        below = ci["high"] < 0                                   # both ends on the same side of zero
+        near, far = (ci["high"], ci["low"]) if below else (ci["low"], ci["high"])
+        side = "lower" if below else "higher"
+        if _rounded(far, places) == 0:                           # the whole range rounds away: say it once
+            span = f"The 95% range for the gap is {_gap(far, unit, places)}."
+        else:
+            span = (f"The 95% range for the gap is {_mag(near, places)} to {_mag(far, places)} "
+                    f"{_unit(unit, _rounded(far, places))} {side}.")
     return f"{head} {span} {basis}"
 
 
@@ -335,7 +367,8 @@ def heart_rate_line(analysis):
         return "Lowest heart rate (secondary): not enough data yet."
     if c["difference"] == 0:
         return f"Lowest heart rate (secondary): the same on both kinds of night ({c['label']})."
-    return (f"Lowest heart rate (secondary): {_gap(c['difference'], c['unit'])} on nights with caffeine, "
+    return (f"Lowest heart rate (secondary): {_gap(c['difference'], c['unit'], PLACES['lowest_heart_rate'])} "
+            f"on nights with caffeine, "
             f"which is {c['caffeine_nights_look']} ({c['label']}).")
 
 

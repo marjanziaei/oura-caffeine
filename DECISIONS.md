@@ -251,6 +251,11 @@ All numbers and wording below are made-up examples, not my data.
 
 **Why the split:** an AI sentence about direction or certainty is the part that can go quietly wrong. The code now owns the confidence, the direction and the range. The AI never gets to make a result sound firmer, or flip better and worse.
 
+**Display rounding (added later the same day):** the lines the code writes round for readability, and only for display. A sleep score is a whole number, so differences and ranges are shown in whole points (a 6.67 gap is "7 points lower"); heart rate keeps one decimal (3.73 is "3.7 bpm"). Two decimals on a whole-number score was false precision. Details that matter:
+- **Half-up, not half-even.** 6.5 is shown as 7 and 0.5 as 1. Python's own `round()` rounds halves to the nearest even number (6.5 becomes 6, 0.5 becomes 0), which would have been silently wrong half the time, and half-up is the same rule the number check uses.
+- **A tiny value is never shown as "0 points".** A real but small gap or range end reads "less than 1 point" (or "less than 0.1 bpm"), so a range such as -13.79 to +0.46 reads "from 14 points lower to less than 1 point higher", which still shows that it crosses zero. If the whole range rounds away it is said once ("less than 1 point lower"). Exactly zero reads "no difference". One point is singular.
+- **The data layer keeps its two decimals.** The analysis JSON, the log and what the model is sent are unchanged; only what I read is rounded. The number check still accepts a rounded value, because its rule already allows a number shown at fewer decimals than the data.
+
 **The direction check:** the model's text is rejected if it contains a word for the *opposite* of what the code said about the main comparison. Which words count depends on the result and on which way is better:
 - caffeine nights look worse (higher score is better): better, improved, boost, higher, rose ... are rejected;
 - caffeine nights look better: worse, harm, decline, lower, dropped ... are rejected;
