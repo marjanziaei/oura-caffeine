@@ -92,6 +92,43 @@ class StatisticsTests(unittest.TestCase):
         self.assertAlmostEqual(stats["ci95"]["high"], -2 + 2.306, places=2)
         self.assertFalse(stats["ci95"]["excludes_zero"])
 
+    def test_interval_is_welch_not_pooled_for_very_unequal_groups(self):
+        # 4 caffeine nights with a wide spread against 20 other nights with a very narrow one.
+        # Here the two methods disagree a lot: pooled would use 22 degrees of freedom (t = 2.07);
+        # Welch's degrees of freedom are about 3 (t = 3.18), so its interval must be clearly wider.
+        caffeine = [60, 70, 80, 90]
+        other = [79, 80, 81] * 6 + [79, 80]
+        self.assertEqual((len(caffeine), len(other)), (4, 20))
+        stats, _ = analysis.compare(caffeine, other)
+
+        n1, n2 = len(caffeine), len(other)
+        m1, m2 = sum(caffeine) / n1, sum(other) / n2
+        v1 = sum((x - m1) ** 2 for x in caffeine) / (n1 - 1)
+        v2 = sum((x - m2) ** 2 for x in other) / (n2 - 1)
+        se = (v1 / n1 + v2 / n2) ** 0.5                                   # not pooled
+        df = (v1 / n1 + v2 / n2) ** 2 / ((v1 / n1) ** 2 / (n1 - 1) + (v2 / n2) ** 2 / (n2 - 1))
+        self.assertAlmostEqual(df, 3.0, delta=0.05)
+
+        ci = stats["ci95"]
+        half = (ci["high"] - ci["low"]) / 2
+        self.assertAlmostEqual((ci["low"] + ci["high"]) / 2, m1 - m2)
+        # t for 3 and 4 degrees of freedom are 3.182 and 2.776, so for df just over 3 it lies between.
+        self.assertTrue(2.776 < half / se < 3.19, half / se)
+        self.assertIn(f"{df:.1f} degrees of freedom", ci["method"])
+
+        pooled_var = ((n1 - 1) * v1 + (n2 - 1) * v2) / (n1 + n2 - 2)
+        pooled_half = analysis.t_critical(n1 + n2 - 2) * (pooled_var * (1 / n1 + 1 / n2)) ** 0.5
+        self.assertGreater(half, 1.5 * pooled_half)                       # a pooled interval would be far narrower
+        self.assertFalse(ci["excludes_zero"])                             # and Welch correctly cannot rule out zero
+
+    def test_welch_interval_flips_with_which_group_is_small(self):
+        # Swap which group is small and wide: the Welch interval stays the same width.
+        wide, narrow = [60, 70, 80, 90], [79, 80, 81] * 6 + [79, 80]
+        a, _ = analysis.compare(wide, narrow)
+        b, _ = analysis.compare(narrow, wide)
+        self.assertAlmostEqual(a["ci95"]["high"] - a["ci95"]["low"], b["ci95"]["high"] - b["ci95"]["low"])
+        self.assertAlmostEqual(a["difference"], -b["difference"])
+
     def test_no_spread_does_not_crash(self):
         stats, d = analysis.compare([60] * 6, [50] * 6)
         self.assertEqual(d, float("inf"))                    # infinite, positive
