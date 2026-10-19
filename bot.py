@@ -211,6 +211,7 @@ def main():
     if not chat_id or not chat_id.lstrip("-").isdigit():
         raise SystemExit("Put your TELEGRAM_CHAT_ID in .env first (run `python find_chat_id.py`).")
 
+    connect().close()  # create or upgrade the tables and the view now, not at the first answer
     app = build_application(token, int(chat_id))
     if args.ask_now:
         app.job_queue.run_once(ask_now, 1, name="ask now")
