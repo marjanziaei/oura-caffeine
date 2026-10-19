@@ -337,6 +337,25 @@ def build_last_7_days(rows, as_of):
     }
 
 
+def build_habit_week(conn, as_of):
+    """How the 5pm rule went over the last 7 finished evenings, counted from my answers alone (daily_log),
+    so it does not depend on whether a sleep night exists yet. 'no' = kept the rule, 'yes' = slipped;
+    a missing row and an 'unanswered' row both count as unanswered. Tagged evenings count like any other."""
+    start, end = as_of - timedelta(days=7), as_of - timedelta(days=1)
+    rows = conn.execute(
+        "SELECT caffeine_after_5pm, backfilled FROM daily_log WHERE evening_date BETWEEN ? AND ?",
+        (start.isoformat(), end.isoformat())).fetchall()
+    kept = sum(1 for r in rows if r["caffeine_after_5pm"] == "no")
+    slipped = sum(1 for r in rows if r["caffeine_after_5pm"] == "yes")
+    answered = kept + slipped
+    return {
+        "evenings_from": start.isoformat(), "evenings_to": end.isoformat(),
+        "evenings": 7,
+        "kept": kept, "slipped": slipped, "answered": answered, "unanswered": 7 - answered,
+        "answered_later": sum(1 for r in rows if r["caffeine_after_5pm"] in ("yes", "no") and r["backfilled"]),
+    }
+
+
 def analyse(conn, since=DEFAULT_SINCE, as_of=None):
     as_of = as_of or datetime.now(PRAGUE).date()
     rows = conn.execute(
@@ -370,6 +389,7 @@ def analyse(conn, since=DEFAULT_SINCE, as_of=None):
         "backfill_check": build_backfill_check(comparisons),
         "evening_dozing": build_nap_check(groups),
         "last_7_days": build_last_7_days(rows, as_of),
+        "habit_week": build_habit_week(conn, as_of),
         "caveats": CAVEATS,
     }
 

@@ -366,6 +366,79 @@ class ScenarioTests(unittest.TestCase):
         self.assertTrue(all(c["label"] == "hint" for c in r["comparisons"]))
 
 
+def day(k):
+    """The evening k days before AS_OF. The week window is k = 1 ... 7 (the evening of AS_OF has not happened)."""
+    return (AS_OF - timedelta(days=k)).isoformat()
+
+
+class HabitWeekTests(unittest.TestCase):
+    def setUp(self):
+        self.s = Scratch()
+        self.addCleanup(self.s.close)
+
+    def week(self):
+        return self.s.run(since=day(30))["habit_week"]
+
+    def answer_only(self, evening, answer, tag="none", backfilled=0):
+        """An answer with no sleep night behind it (the night has not been synced yet)."""
+        self.s.conn.execute("INSERT INTO daily_log (evening_date, caffeine_after_5pm, tag, backfilled) "
+                            "VALUES (?,?,?,?)", (evening, answer, tag, backfilled))
+        self.s.conn.commit()
+
+    def test_counts_kept_slipped_and_unanswered(self):
+        self.s.add("no", 80, evening_date=day(1))
+        self.s.add("no", 80, evening_date=day(2))
+        self.s.add("yes", 80, evening_date=day(3))
+        self.s.add("no", 80, evening_date=day(4))
+        self.s.add("unanswered", 80, evening_date=day(5))        # a row that says unanswered ...
+        self.s.add("no", 80, evening_date=day(6), log=False)     # ... and a night with no row at all
+        self.s.add("no", 80, evening_date=day(7))
+        h = self.week()
+        self.assertEqual((h["kept"], h["slipped"], h["answered"], h["unanswered"], h["evenings"]), (4, 1, 5, 2, 7))
+        self.assertEqual(h["kept"] + h["slipped"] + h["unanswered"], 7)
+
+    def test_the_window_is_the_seven_finished_evenings(self):
+        for k in (0, 8, 9):                                       # today's evening, and older than the week
+            self.s.add("yes", 80, evening_date=day(k))
+        self.s.add("no", 80, evening_date=day(1))                 # both edges of the window count
+        self.s.add("no", 80, evening_date=day(7))
+        h = self.week()
+        self.assertEqual((h["kept"], h["slipped"], h["unanswered"]), (2, 0, 5))
+        self.assertEqual((h["evenings_from"], h["evenings_to"]), (day(7), day(1)))
+
+    def test_evenings_without_a_sleep_night_still_count(self):
+        self.answer_only(day(1), "no")
+        self.answer_only(day(2), "yes")
+        h = self.week()
+        self.assertEqual((h["kept"], h["slipped"], h["unanswered"]), (1, 1, 5))
+
+    def test_tagged_evenings_count_like_any_other(self):
+        self.s.add("no", 80, evening_date=day(1), tag="alcohol")
+        self.s.add("yes", 80, evening_date=day(2), tag="illness")
+        self.s.add("no", 80, evening_date=day(3), tag=None)
+        h = self.week()
+        self.assertEqual((h["kept"], h["slipped"]), (2, 1))
+
+    def test_answers_filled_in_later_are_counted_and_flagged(self):
+        self.s.add("no", 80, evening_date=day(1))
+        self.s.add("no", 80, evening_date=day(2), backfilled=1)
+        self.s.add("yes", 80, evening_date=day(3), backfilled=1)
+        self.s.add("unanswered", 80, evening_date=day(4), backfilled=1)      # not an answer, so not "later"
+        h = self.week()
+        self.assertEqual((h["kept"], h["slipped"], h["answered"], h["answered_later"]), (2, 1, 3, 2))
+
+    def test_a_week_with_no_answers(self):
+        h = self.week()
+        self.assertEqual((h["kept"], h["slipped"], h["answered"], h["unanswered"]), (0, 0, 0, 7))
+
+    def test_it_does_not_depend_on_the_comparison_rules(self):
+        # Tagged and unanswered nights are left out of the caffeine comparison but not of the habit count.
+        self.s.add("no", 80, evening_date=day(1), tag="travel")
+        r = self.s.run(since=day(30))
+        self.assertEqual(r["nights"]["used"], 0)
+        self.assertEqual(r["habit_week"]["kept"], 1)
+
+
 class DatabaseTests(unittest.TestCase):
     def test_old_view_is_upgraded_without_losing_data(self):
         with tempfile.TemporaryDirectory() as folder:

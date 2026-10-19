@@ -54,6 +54,20 @@ FROM oura_nights n
 LEFT JOIN daily_log l ON l.evening_date = date(n.day, '-1 day');
 """
 
+# One row per weekly message that was sent (or tried): which path wrote it, so I can count later.
+# Holds no message text and no sleep data. Example: SELECT source, count(*) FROM weekly_messages GROUP BY source;
+WEEKLY_LOG_SQL = """
+CREATE TABLE IF NOT EXISTS weekly_messages (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    sent_at   TEXT NOT NULL,                                  -- UTC time the run finished
+    source    TEXT NOT NULL CHECK (source IN ('ai', 'template')),
+    attempts  INTEGER NOT NULL,                               -- AI tries made (1 or 2)
+    label     TEXT NOT NULL,                                  -- confidence label of the main result
+    problems  TEXT NOT NULL,                                  -- JSON: what the checker rejected, per attempt
+    sent      INTEGER NOT NULL CHECK (sent IN (0, 1))         -- 1 = Telegram accepted it
+);
+"""
+
 # Columns added after a table was first created. CREATE TABLE IF NOT EXISTS leaves
 # existing tables alone, so connect() adds any of these that are missing.
 ADDED_COLUMNS = {
@@ -74,6 +88,7 @@ def connect(path=DB_FILE):
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    conn.executescript(WEEKLY_LOG_SQL)
     for table, columns in ADDED_COLUMNS.items():
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         for name, sql_type in columns.items():

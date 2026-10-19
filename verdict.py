@@ -1,8 +1,8 @@
 """Turn the analysis JSON into the weekly message (DECISIONS.md #13).
 
 The message is written in two layers:
-  - the code writes the confidence line, the main result (metric, better or worse, the range) and the
-    heart rate line, straight from the JSON;
+  - the code writes the habit line (how the 5pm rule went this week), the confidence line, the main
+    result (metric, better or worse, the range) and the heart rate line, straight from the JSON;
   - Claude writes only a short explanation and the caveats after them, and must not restate the direction.
 Every number in Claude's text is checked against the JSON, and its text is rejected if it contains the
 opposite direction word. If the check fails twice, or the API is down, the whole message comes from a
@@ -291,6 +291,16 @@ def _gap(x, unit):
     return f"{_num(abs(x))} {unit} {'lower' if x < 0 else 'higher'}"
 
 
+def habit_line(analysis):
+    """First line of the message: how the 5pm rule went over the last 7 evenings, from my answers alone."""
+    h = analysis["habit_week"]
+    if h["answered"] == 0:
+        return f"Last {h['evenings']} evenings: no answers yet; {h['unanswered']} unanswered."
+    evenings = "evening" if h["answered"] == 1 else "evenings"
+    return (f"Last {h['evenings']} evenings: kept the 5pm rule on {h['kept']} of {h['answered']} answered "
+            f"{evenings}; {h['unanswered']} unanswered.")
+
+
 def core_sentence(analysis):
     """The main result in plain words, built only from the JSON: the metric, better or worse, and the
     95% range (or 'not enough data yet'). Written by code, so the model cannot change its direction."""
@@ -367,11 +377,12 @@ def call_claude(system, user):
     return "".join(b.text for b in response.content if b.type == "text")
 
 
-def build_message(analysis, call_model=call_claude):
+def build_message(analysis, call_model=None):
     """Returns {"text", "source": "ai" | "template", "attempts", "problems"}. Never raises for API trouble."""
+    call_model = call_model or call_claude            # looked up now, so a replacement made later takes effect
     payload = to_payload(analysis)
     comparison = primary(analysis)
-    head = confidence_line(analysis)
+    head = f"{habit_line(analysis)}\n\n{confidence_line(analysis)}"
     problems, history = None, []
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:

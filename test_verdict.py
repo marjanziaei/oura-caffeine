@@ -4,7 +4,10 @@ Run:  .venv/bin/python -m unittest test_verdict -v
 Made-up data in scratch databases (see test_analysis.Scratch).
 """
 import json
+import sqlite3
 import unittest
+from contextlib import closing
+from datetime import timedelta
 from unittest import mock
 
 import requests
@@ -28,6 +31,7 @@ def setUpModule():
 
 def tearDownModule():
     setUpModule.patcher.stop()
+    assert not REAL_API_ATTEMPTS, f"{len(REAL_API_ATTEMPTS)} test(s) tried to reach the real API"
 
 
 class FakeAPI:
@@ -323,6 +327,47 @@ class CoreSentenceTests(unittest.TestCase):
         self.assertIn("not enough data yet", verdict.heart_rate_line(make_analysis("empty")))
 
 
+class HabitLineTests(unittest.TestCase):
+    def line(self, kept, slipped, unanswered):
+        answered = kept + slipped
+        return verdict.habit_line({"habit_week": {"evenings": 7, "kept": kept, "slipped": slipped,
+                                                  "answered": answered, "unanswered": unanswered}})
+
+    def test_wording(self):
+        self.assertEqual(self.line(4, 2, 1), "Last 7 evenings: kept the 5pm rule on 4 of 6 answered evenings; 1 unanswered.")
+        self.assertEqual(self.line(7, 0, 0), "Last 7 evenings: kept the 5pm rule on 7 of 7 answered evenings; 0 unanswered.")
+        self.assertEqual(self.line(0, 3, 4), "Last 7 evenings: kept the 5pm rule on 0 of 3 answered evenings; 4 unanswered.")
+        self.assertEqual(self.line(1, 0, 6), "Last 7 evenings: kept the 5pm rule on 1 of 1 answered evening; 6 unanswered.")
+        self.assertEqual(self.line(0, 0, 7), "Last 7 evenings: no answers yet; 7 unanswered.")
+
+    def test_it_is_the_first_line_on_both_paths_and_above_the_confidence_line(self):
+        s = Scratch()
+        self.addCleanup(s.close)
+        for i, answer in enumerate(("no", "no", "yes", "no", "no", "unanswered")):
+            s.add(answer, 80, evening_date=(AS_OF - timedelta(days=7 - i)).isoformat())
+        a = s.run(since=(AS_OF - timedelta(days=30)).isoformat())
+        expected = "Last 7 evenings: kept the 5pm rule on 4 of 5 answered evenings; 2 unanswered."
+        for api in (FakeAPI(explanation(a)), FakeAPI(ConnectionError())):
+            m = verdict.build_message(a, api)
+            lines = m["text"].split("\n")
+            self.assertEqual(lines[0], expected, m["source"])
+            self.assertEqual(lines[1], "")
+            self.assertTrue(lines[2].startswith("Confidence:"), m["source"])
+
+    def test_the_habit_numbers_never_go_to_the_model_and_the_model_cannot_change_them(self):
+        a = make_analysis("finding")
+        payload = json.dumps(verdict.to_payload(a))
+        self.assertNotIn("habit", payload)
+        self.assertNotIn("kept", payload)
+        # If the model quotes habit counts anyway, they are numbers it was never given: rejected, then retried.
+        m = verdict.build_message(a, FakeAPI("You kept the 5pm rule on 3 of 7 evenings. " + explanation(a),
+                                             explanation(a)))
+        self.assertEqual((m["source"], m["attempts"]), ("ai", 2))
+        self.assertIn("3", m["problems"][0][0])
+        self.assertNotIn("You kept", m["text"])
+        self.assertTrue(m["text"].startswith(verdict.habit_line(a)))      # the first line is always the code's
+
+
 class BuildMessageTests(unittest.TestCase):
     def test_layout_confidence_then_code_result_then_ai_explanation(self):
         for kind in ("hint", "finding", "better", "none", "noisy"):
@@ -331,18 +376,21 @@ class BuildMessageTests(unittest.TestCase):
             m = verdict.build_message(a, api)
             self.assertEqual((m["source"], m["attempts"]), ("ai", 1), kind)
             lines = m["text"].split("\n")
-            self.assertEqual(lines[0], verdict.confidence_line(a))
-            self.assertTrue(lines[0].startswith(f"Confidence: {verdict.primary(a)['label'].upper()}"))
-            self.assertEqual(lines[2], verdict.core_sentence(a))
-            self.assertEqual(lines[3], verdict.heart_rate_line(a))
-            self.assertEqual(lines[5], explanation(a))
+            self.assertEqual(lines[0], verdict.habit_line(a))
+            self.assertTrue(lines[0].startswith("Last 7 evenings:"))
+            self.assertEqual(lines[1], "")
+            self.assertEqual(lines[2], verdict.confidence_line(a))
+            self.assertTrue(lines[2].startswith(f"Confidence: {verdict.primary(a)['label'].upper()}"))
+            self.assertEqual(lines[4], verdict.core_sentence(a))
+            self.assertEqual(lines[5], verdict.heart_rate_line(a))
+            self.assertEqual(lines[7], explanation(a))
             self.assertIn("Explanation written by AI", lines[-1])
 
     def test_ai_cannot_change_the_label_line(self):
         a = make_analysis("hint")
         api = FakeAPI("Confidence: FINDING. This is certain.", explanation(a))
         m = verdict.build_message(a, api)
-        self.assertTrue(m["text"].startswith("Confidence: HINT"))
+        self.assertTrue(m["text"].split("\n")[2].startswith("Confidence: HINT"))
         self.assertNotIn("FINDING", m["text"])
         self.assertEqual(m["attempts"], 2)
 
@@ -366,7 +414,7 @@ class BuildMessageTests(unittest.TestCase):
         self.assertEqual(m["source"], "template")
         self.assertNotIn("37", m["text"])
         self.assertIn("without AI", m["text"])
-        self.assertTrue(m["text"].startswith("Confidence: FINDING"))
+        self.assertTrue(m["text"].split("\n")[2].startswith("Confidence: FINDING"))
 
     def test_flipped_direction_is_rejected_then_retried(self):
         a = make_analysis("finding")                              # caffeine nights are worse
@@ -388,7 +436,7 @@ class BuildMessageTests(unittest.TestCase):
             self.assertEqual((m["source"], len(api.calls)), ("template", 2), kind)
             self.assertNotIn(f"The score {wrong}", m["text"])
             self.assertIn(right, m["text"])
-            self.assertTrue(m["text"].startswith("Confidence:"))
+            self.assertTrue(m["text"].split("\n")[2].startswith("Confidence:"))
 
     def test_api_down_gives_the_plain_template(self):
         a = make_analysis("finding")
@@ -396,7 +444,7 @@ class BuildMessageTests(unittest.TestCase):
             api = FakeAPI(error)
             m = verdict.build_message(a, api)
             self.assertEqual((m["source"], len(api.calls)), ("template", 2), repr(error))
-            self.assertTrue(m["text"].startswith("Confidence: FINDING"))
+            self.assertTrue(m["text"].split("\n")[2].startswith("Confidence: FINDING"))
             self.assertIn("the call failed", m["problems"][0][0])
             self.assertIn("which is worse", m["text"])
 
@@ -531,6 +579,94 @@ class WeeklyMessageTests(unittest.TestCase):
                 mock.patch("builtins.print"):
             weekly_message.main()
         send.assert_called_once_with("T", "tok", "42")
+
+
+class MessageLogTests(unittest.TestCase):
+    """Which path wrote each weekly message is recorded in the weekly_messages table."""
+    HINT_TEXT = ("This is only a first look, and more nights would help. This shows a link, not a cause, and a "
+                 "steady trend in your health over time could be mistaken for a caffeine effect.")
+
+    def setUp(self):
+        self.s = Scratch()
+        self.addCleanup(self.s.close)
+        self.s.add("yes", 70)
+        self.s.add("no", 80)
+
+    def run_main(self, send=True, api=None, send_effect=None):
+        argv = ["weekly_message.py", "--db", str(self.s.path), "--since", "2030-01-01", "--as-of", AS_OF.isoformat()]
+        if send:
+            argv.append("--send")
+        with mock.patch.object(weekly_message, "send_telegram", side_effect=send_effect) as sender, \
+                mock.patch.object(verdict, "call_claude", api or FakeAPI(self.HINT_TEXT)), \
+                mock.patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "42"}), \
+                mock.patch("weekly_message.load_dotenv"), \
+                mock.patch("sys.argv", argv), \
+                mock.patch("builtins.print"):
+            weekly_message.main()
+        return sender
+
+    def rows(self):
+        with closing(sqlite3.connect(self.s.path)) as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute("SELECT * FROM weekly_messages ORDER BY id").fetchall()
+
+    def test_an_ai_message_is_logged_as_ai(self):
+        self.run_main()
+        (row,) = self.rows()
+        self.assertEqual((row["source"], row["attempts"], row["label"], row["sent"]), ("ai", 1, "hint", 1))
+        self.assertEqual(json.loads(row["problems"]), [[]])
+        self.assertRegex(row["sent_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$")     # UTC
+
+    def test_a_template_message_is_logged_as_template_with_the_reason(self):
+        self.run_main(api=FakeAPI(ConnectionError("down")))
+        (row,) = self.rows()
+        self.assertEqual((row["source"], row["attempts"], row["sent"]), ("template", 2, 1))
+        self.assertEqual(len(json.loads(row["problems"])), 2)
+        self.assertIn("the call failed", row["problems"])
+
+    def test_a_rejected_then_accepted_answer_is_logged_with_what_was_rejected(self):
+        self.run_main(api=FakeAPI("There were 37 nights. " + self.HINT_TEXT, self.HINT_TEXT))
+        (row,) = self.rows()
+        self.assertEqual((row["source"], row["attempts"]), ("ai", 2))
+        self.assertIn("37", json.loads(row["problems"])[0][0])
+
+    def test_a_dry_run_logs_nothing(self):
+        sender = self.run_main(send=False)
+        sender.assert_not_called()
+        self.assertEqual(self.rows(), [])
+
+    def test_a_failed_send_is_logged_as_not_sent_and_still_raises(self):
+        with self.assertRaises(RuntimeError):
+            self.run_main(send_effect=RuntimeError("Telegram send failed (ConnectionError)"))
+        (row,) = self.rows()
+        self.assertEqual((row["source"], row["sent"]), ("ai", 0))
+
+    def test_a_logging_failure_never_stops_the_message(self):
+        with mock.patch.object(weekly_message, "connect", side_effect=sqlite3.OperationalError("database is locked")):
+            sender = self.run_main()
+        sender.assert_called_once()
+        self.assertEqual(self.rows(), [])
+
+    def test_the_log_can_be_counted_and_holds_no_message_text(self):
+        for api in (FakeAPI(self.HINT_TEXT), FakeAPI(self.HINT_TEXT), FakeAPI(ConnectionError())):
+            self.run_main(api=api)
+        with closing(sqlite3.connect(self.s.path)) as conn:
+            counts = dict(conn.execute("SELECT source, count(*) FROM weekly_messages GROUP BY source"))
+            columns = [r[1] for r in conn.execute("PRAGMA table_info(weekly_messages)")]
+        self.assertEqual(counts, {"ai": 2, "template": 1})
+        self.assertEqual(columns, ["id", "sent_at", "source", "attempts", "label", "problems", "sent"])
+        dumped = json.dumps([dict(r) for r in self.rows()])
+        self.assertNotIn("first look", dumped)
+        self.assertNotIn("Confidence", dumped)
+
+    def test_the_table_refuses_nonsense(self):
+        with closing(sqlite3.connect(self.s.path)) as conn:
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("INSERT INTO weekly_messages (sent_at, source, attempts, label, problems, sent) "
+                             "VALUES ('x', 'guess', 1, 'hint', '[]', 1)")
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("INSERT INTO weekly_messages (sent_at, source, attempts, label, problems, sent) "
+                             "VALUES ('x', 'ai', 1, 'hint', '[]', 2)")
 
 
 class SafetyNetTests(unittest.TestCase):

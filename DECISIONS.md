@@ -238,6 +238,8 @@ Why the extra conditions on `finding`: with 5 against 5 nights, a large \|d\| tu
 
 All numbers and wording below are made-up examples, not my data.
 
+*Layout update: decision 14 adds a habit line above everything described here.*
+
 **What it is:** `verdict.py` turns the analysis JSON (decision 12) into a short weekly message, and `weekly_message.py` builds it and sends it to my Telegram chat. By default it only prints; sending needs `--send`.
 
 **The message has two layers.**
@@ -277,3 +279,38 @@ Words that restate the code's own direction are not rejected, and the prompt tel
 **Deployed (2026-10-19):** `anthropic` installed on the server, the API key added to the server's `.env` by piping that one line from the laptop (so the value was never printed or typed), and the weekly timer installed and enabled. It is owner-only like the rest of `.env` (0600). The next scheduled run is Sunday 13:30 Prague time. One real run with `--send` the same day delivered the message to Telegram: the AI explanation passed the check on the first try.
 
 **A wrong assumption, found while deploying:** I expected restarting the bot to upgrade the database view. It did not: the bot only opened the database when handling an answer, so the server's view stayed old until the next sync (the sync opens it daily). Fixed at the source: the bot now opens the database once at startup, which creates or upgrades the tables and the view. Checked on the server: the view had the new columns right after the restart, and all the data was still there. Without this, a weekly run that came before any sync after a deploy would have refused to start. That is the safe failure (it says the view is out of date), but it would still have meant no message that Sunday.
+
+## 14. Habit tracking first: the caffeine comparison fills slowly, from the evenings I slip
+
+**Date:** 2026-10-19
+
+All numbers and wording below are made-up examples, not my data.
+
+**Decision:** I use this project mainly to track a habit (no caffeine after 5pm), not to run a randomised experiment. A coin flip deciding which evenings get caffeine would have produced a cleaner comparison faster, but it would mean drinking caffeine on evenings I would have kept the rule. I chose the habit. The consequence I accept: the caffeine comparison fills slowly, only from the evenings I slip.
+
+**1. A habit line at the top of the weekly message**, written by the code from my own answers, above the confidence line and the comparison:
+
+`Last 7 evenings: kept the 5pm rule on 4 of 6 answered evenings; 1 unanswered.`
+
+- **The 7 evenings** are the 7 finished evenings before the message, the same window as the last-7-days summary. On a Sunday that is last Sunday to Saturday; Sunday's own evening has not happened yet.
+- **Kept** means I answered "no" to caffeine after 5pm; **slipped** means "yes". A missing answer and an answer stored as `unanswered` both count as unanswered, so the three numbers always add up to 7.
+- **Counted from my answers alone** (`daily_log`), not from the sleep view. An evening still counts if its Oura night has not synced yet, and an evening tagged alcohol or travel still counts for the habit even though it is left out of the caffeine comparison.
+- **Answers I filled in later are included** in the line (they are my answers), and counted separately in the data.
+- **The model never sees these counts and cannot change them.** The line is built by code on both paths (AI and template). If the model quotes a habit count anyway, it is a number it was never given, so the number check rejects it.
+
+**2. Logging which path wrote each message.** A table `weekly_messages` in the same database records, for every message sent with `--send`: when (UTC), the path (`ai` or `template`), how many AI attempts, the confidence label, what the checker rejected on each attempt, and whether Telegram accepted it. Chosen over a text file because it can be counted with a query, it travels with the nightly backup, and it lives next to everything else.
+
+Examples to count later:
+- `SELECT source, count(*) FROM weekly_messages GROUP BY source;`
+- `SELECT sent_at, source, attempts FROM weekly_messages ORDER BY id DESC LIMIT 10;`
+
+Rules: dry runs (no `--send`) log nothing, so the counts only cover real messages. A failed send is logged with `sent = 0`, since the path that wrote it is still worth counting. If the log cannot be written, the message still goes out and a warning is printed. The table holds no message text and no sleep data, and refuses a path other than `ai` or `template`.
+
+**What this means for the data (my own notes):**
+- The comparison needs at least 5 nights in each group before it can say more than `hint`. If I slip about once a week, the caffeine group takes around 5 weeks to reach 5, and 10 weeks to reach the 10 needed for a `finding`. For a long time the label will honestly say `hint`.
+- The evenings I slip are not random. If I tend to drink caffeine after a bad day, a tired day or a late day, those nights could look worse for reasons that have nothing to do with caffeine. So even a clear-looking difference stays an association, and the time-trend caveat from decision 12 matters more than before.
+- The habit line measures what I did, not how I slept. It says nothing about the comparison below it.
+
+**A flaw the new tests exposed:** `build_message` fixed its default API function when the code was loaded, so tests that replaced it were silently not replacing it. No real call was made (the real client is blocked in tests), but those tests were not testing what they claimed. It now looks the function up at call time, and the test run fails outright if any test ever tries to reach the real API.
+
+**How I tested it:** 18 more tests (95 in total). The habit counts: kept, slipped, unanswered and the 7-evening total; both edges of the window; today's evening and older ones left out; an answer with no sleep night; tagged evenings; answers filled in later; an empty week; and that it does not depend on the comparison's exclusion rules. The line itself: exact wording including singular and "no answers yet", first on both paths, above the confidence line, never sent to the model. The log: an AI message, a template message with its reason, a retry with its rejection recorded, a dry run, a failed send, a log failure that must not stop the message, counting by path, no message text stored, and the table refusing nonsense. I broke the code 12 more ways on purpose (habit counted from the wrong answer, window off by one, unanswered not derived, habit read from the sleep view, line missing, wording swapped, dry run logging, log failure not caught, failed send not logged, path always "ai", failed marked as sent, constraint removed) and each was caught.
