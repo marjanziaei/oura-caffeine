@@ -1,0 +1,10 @@
+[Unit]
+Description=Oura caffeine weekly message, Sundays 13:30 Prague time (after the 13:00 sync)
+
+[Timer]
+# The zone is part of the schedule, so it holds whatever the server clock is set to.
+OnCalendar=Sun *-*-* 13:30:00 Europe/Prague
+Persistent=true
+
+[Install]
+WantedBy=timers.target

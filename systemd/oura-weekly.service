@@ -1,0 +1,12 @@
+[Unit]
+Description=Oura caffeine weekly message
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/oura-caffeine
+ExecStart=/home/ubuntu/oura-caffeine/.venv/bin/python weekly_message.py --send
+NoNewPrivileges=true
+PrivateTmp=true

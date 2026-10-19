@@ -231,3 +231,36 @@ Why the extra conditions on `finding`: with 5 against 5 nights, a large \|d\| tu
 **How I verified it:** 25 tests on made-up data in scratch databases: a week with one caffeine night; a clear difference; no difference; a week where every night is tagged; backfilled answers flipping the result (no difference on the evening, a clear one with late answers added); the label boundaries (just under and over each threshold); each way of being left out; unmeasured dozing, and the backfill check when a view has no caffeine nights (it must say "cannot compare"). One test uses very unequal groups and spreads (4 wide against 20 narrow) and checks the interval against Welch's formulas by hand; the earlier worked example had equal groups, where Welch and pooled give the same answer, so on its own it could not have caught a pooled interval. Swapping in a pooled interval makes only the new test fail. I also deliberately broke the code five ways (the 10-night gate, the interval condition, the better/worse direction, the backfilled filter, the sign of the difference) and each was caught. My real database file was byte-identical before and after.
 
 **Not yet done:** running it on the server, and turning the JSON into text.
+
+## 13. The weekly message: the code states the confidence, the AI only phrases it, and every number is checked
+
+**Date:** 2026-10-19
+
+All numbers below are made-up examples, not my data.
+
+**What it is:** `verdict.py` turns the analysis JSON (decision 12) into a short weekly message, and `weekly_message.py` builds it and sends it to my Telegram chat. It is written and tested on the laptop and **not deployed yet**. By default it only prints; sending needs `--send`.
+
+**The message:**
+1. **First line, written by the code:** `Confidence: HINT (sleep score, answers given on the evening only): a first look only; ...`. The label comes from the primary comparison, with one fixed sentence per label. The model never writes it, so it cannot make a result sound firmer than the rule allows. A model answer that contains its own "Confidence" line is rejected.
+2. **A short verdict from Claude.** The model is Claude Haiku 5.5 (`claude-haiku-5-5`), the current small model in the API docs: the job is rewording a few numbers, not reasoning. Effort is set to low. No `temperature` (that model rejects non-default values).
+3. **A footer** saying whether it was written by AI or built from the data alone.
+
+**What is sent to the API:** only the aggregate statistics: group sizes, averages, spreads, the interval, the labels, the flags and the caveats. It is built from a fixed list of fields, not by deleting fields from the analysis output, so a new field cannot leak by accident. No dates, bedtimes, evening dates or individual nights. As a second lock, the code refuses to send at all if anything date-shaped or time-shaped is in the payload. The same restriction is in `PRIVACY.md`.
+
+**What the model is told:** lead with the primary comparison; say which direction is better and which way caffeine nights went; give the 95% range in plain words (and say so when it includes zero or cannot be given); one sentence on heart rate; mention evening dozing only when flagged and the backfill check only when it matters; one sentence that this is an association and a general improvement over time could look like a caffeine effect; no medical advice; no calculating new numbers.
+
+**The number check (the guard):**
+- Every number in the model's text must come from the JSON. **Rounding rule:** a number is accepted if it equals some number in the JSON after rounding that number half-up to as many decimals as the text shows, ignoring the minus sign. Example: a data value of 8.15 may be written 8.15, 8.2 or 8, but not 8.1, 8.25 or 9. Numbers inside the JSON's own strings count as in the JSON, and 95 (the interval level) and 7 (days covered) are in the payload for that reason.
+- Spelled-out numbers (two, three, half, twice ...) are rejected, because they would slip past a digit check. "One" and "zero" are allowed: "one" is too common in plain English, and "the range includes zero" is ordinary wording.
+- Dates and times in the text are rejected. So are overclaiming words (proves, definitely ...), medical or advice wording (doctor, avoid caffeine ...), and markdown or lists. Words like "finding" and "significant" are rejected unless the label really is `finding`.
+- **Retry once, then fall back.** If the check fails, the model gets one more try, told exactly what was wrong. If that fails, or the API is down, or the model stops early, the message is built by plain code from the JSON, with no AI. The template is tested against the same number check, so it can never print a number that is not in the data. I always get a correct message.
+
+**Limits of the guard, stated plainly:** it checks that numbers exist, not that they are attached to the right claim. A real number swapped between the two groups, or a wrong "better/worse", would pass. A made-up number can also pass if it happens to round to some other number in the data (for example a 5 when 5 is a threshold). The wording screens are word lists, not understanding. The first real run read well but was long and used internal terms like "in view"; the prompt could be tightened.
+
+**Schedule:** Sundays 13:30, with the zone inside the timer (`OnCalendar=Sun *-*-* 13:30:00 Europe/Prague`), 30 minutes after the 13:00 sync. Checked on the server with `systemd-analyze calendar` (nothing installed): the next run is 12:30 UTC on the Sunday the clocks change, which is 13:30 Prague time, as intended. The unit files are in `systemd/`.
+
+**Sending:** plain text, no markdown parsing. If the send fails, the error says what kind of failure it was but never includes the URL, because the Telegram URL contains the bot token (decision 7).
+
+**How I tested it:** 31 tests with a fake API only; any attempt to create the real client during the tests fails. They cover: a normal answer; an invented number caught, retried, and then either fixed or replaced by the template (and exactly two calls, never three); the API down, timing out, or refusing; recovery on the retry; no dates or nights in the payload, and a date forced into it stopping the send; the rounding rule at its edges (half-up, not half-even; a boolean is not a number); the label line unchangeable by the model; the template on seven different situations including every night tagged and an empty database; and Telegram errors not leaking the token. I also broke the code nine ways on purpose (number check off, wrong rounding, no retry, three tries, errors not caught, date check off, label line removed, weak-label words allowed, dates added to the payload) and each was caught. Then one real call on a copy of my latest backup: the AI version passed the check on the first try. Nothing was sent to Telegram.
+
+**To deploy later:** install `anthropic` (pinned in `requirements.txt`) on the server, add `ANTHROPIC_API_KEY` to the server's `.env`, copy the two unit files, enable the timer, and restart the bot so the upgraded database view is created.
