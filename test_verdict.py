@@ -5,13 +5,10 @@ Made-up data in scratch databases (see test_analysis.Scratch).
 """
 import json
 import unittest
-from contextlib import closing
-from datetime import date
 from unittest import mock
 
 import requests
 
-import analysis
 import verdict
 import weekly_message
 from test_analysis import AS_OF, Scratch, spread
@@ -55,15 +52,25 @@ def make_analysis(kind):
             s.add("yes", 70, hr=62)
             for score in (82, 84, 80, 85, 83, 81):
                 s.add("no", score, hr=52)
-        elif kind == "finding":                  # a clear difference, plenty of nights
+        elif kind == "finding":                  # caffeine nights clearly worse
             for score, hr in zip(spread(70, 12), spread(62, 12)):
                 s.add("yes", score, hr=hr, nap=25)
             for score, hr in zip(spread(85, 12), spread(52, 12)):
                 s.add("no", score, hr=hr, nap=5)
+        elif kind == "better":                   # caffeine nights clearly better
+            for score, hr in zip(spread(90, 12), spread(50, 12)):
+                s.add("yes", score, hr=hr)
+            for score, hr in zip(spread(75, 12), spread(58, 12)):
+                s.add("no", score, hr=hr)
         elif kind == "none":                     # no difference
             for score, hr in zip(spread(80, 12), spread(55, 12)):
                 s.add("yes", score, hr=hr)
                 s.add("no", score, hr=hr)
+        elif kind == "noisy":                    # a small gap inside the noise: the range includes zero
+            for score in (70, 80, 90, 75, 85, 72, 88, 78):
+                s.add("yes", score)
+            for score in (72, 82, 78, 88, 70, 86, 80, 76):
+                s.add("no", score)
         elif kind == "all_tagged":
             for tag in ("alcohol", "illness", "travel", "other", "alcohol", "illness", "travel"):
                 s.add("yes", 60, tag=tag)
@@ -87,14 +94,26 @@ def make_analysis(kind):
         s.close()
 
 
-def good_text(a):
-    """A valid verdict whose numbers are taken from the analysis itself."""
-    c = verdict.primary(a)
-    cn, nn, ci = c["caffeine"], c["no_caffeine"], c["ci95"]
-    return (f"On nights with caffeine after 5pm the sleep score averaged {cn['mean']} points, against "
-            f"{nn['mean']} points on the other nights. The 95% range for the difference runs from "
-            f"{ci['low']} to {ci['high']} points. This is an association, and a general improvement in health "
-            "over time could be mistaken for a caffeine effect.")
+LABEL_LINES = {
+    "hint": "This is only a first look, and more nights would help.",
+    "early signal": "This is worth watching.",
+    "finding": "The gap is clear.",
+    "no clear difference": "There is no clear difference.",
+}
+
+
+def explanation(a, extra=""):
+    """A valid explanation for this analysis: no direction words, no numbers unless added with extra."""
+    label = verdict.primary(a)["label"]
+    return (f"{LABEL_LINES[label]} This shows a link, not a cause, and a steady trend in your health over time "
+            f"could be mistaken for a caffeine effect.{extra}")
+
+
+def comparison(label="finding", look="worse", good="higher"):
+    return {"label": label, "caffeine_nights_look": look, "better_direction": good}
+
+
+EMPTY_PAYLOAD = {}
 
 
 class PayloadTests(unittest.TestCase):
@@ -108,21 +127,29 @@ class PayloadTests(unittest.TestCase):
         for forbidden in ("period", "evenings_since", "as_of", "evenings_from", "evening_date",
                           "bedtime", "sleep_day", "2026"):
             self.assertNotIn(forbidden, sent)
-        self.assertIn("primary_comparison", sent)
+        self.assertIn("main_result", sent)
+
+    def test_payload_uses_everyday_words(self):
+        for kind in ("finding", "flip", "only_backfilled_caffeine"):
+            sent = json.dumps(verdict.to_payload(make_analysis(kind))).lower()
+            for jargon in ("backfill", "in view", "|d|", "ci95", "excludes_zero", "label_reason", "effect_size",
+                           "without_backfilled", "pooled", "welch", "changes_result_"):
+                self.assertNotIn(jargon, sent, kind)
+            self.assertIn("filled_in_later", sent)
 
     def test_a_date_that_gets_in_anyway_stops_the_send(self):
         a = make_analysis("finding")
-        a["caveats"] = a["caveats"] + ["Night of 2026-10-03 was odd."]
+        a["comparisons"][0]["unit"] = "points on 2026-10-03"
         with self.assertRaises(ValueError):
             verdict.to_payload(a)
-        api = FakeAPI(good_text(make_analysis("finding")))
+        api = FakeAPI(explanation(make_analysis("finding")))
         with self.assertRaises(ValueError):
             verdict.build_message(a, api)
         self.assertEqual(api.calls, [])                       # nothing was sent
 
     def test_the_model_receives_only_the_payload(self):
         a = make_analysis("finding")
-        api = FakeAPI(good_text(a))
+        api = FakeAPI(explanation(a))
         verdict.build_message(a, api)
         self.assertEqual(len(api.calls), 1)
         self.assertNotRegex(api.calls[0]["user"], r"\d{4}-\d{2}-\d{2}")
@@ -160,29 +187,35 @@ class GuardTests(unittest.TestCase):
     def setUp(self):
         self.a = make_analysis("finding")
         self.payload = verdict.to_payload(self.a)
+        self.c = verdict.primary(self.a)
 
-    def problems(self, text, label="finding"):
-        return verdict.problems_with(text, self.payload, label)
+    def problems(self, text, c=None):
+        return verdict.problems_with(text, self.payload, c or self.c)
 
     def test_good_text_passes(self):
-        self.assertEqual(self.problems(good_text(self.a)), [])
+        self.assertEqual(self.problems(explanation(self.a)), [])
 
     def test_invented_number_is_caught(self):
-        text = good_text(self.a).replace("5pm", "5pm and a 37 point swing")
+        text = explanation(self.a, " There was a 37 point swing.")
         self.assertTrue(any("37" in p for p in self.problems(text)))
 
+    def test_a_number_from_the_data_is_allowed(self):
+        n = self.c["caffeine"]["n"]
+        self.assertEqual(self.problems(explanation(self.a, f" That is {n} nights with caffeine.")), [])
+
     def test_spelled_out_numbers_and_dates_are_caught(self):
-        self.assertTrue(self.problems("It dropped by about eight points."))
-        self.assertTrue(self.problems("On 3 October it dropped."))
-        self.assertTrue(self.problems("At 21:00 it dropped."))
+        self.assertTrue(self.problems("About eight nights were used."))
+        self.assertTrue(self.problems("On 3 October it was odd."))
+        self.assertTrue(self.problems("At 21:00 it was odd."))
+        self.assertEqual(self.problems("The range includes zero."), [])         # ordinary wording is fine
 
     def test_certainty_words_depend_on_the_label(self):
         text = "This is a significant finding."
-        self.assertEqual(self.problems(text, "finding"), [])
-        self.assertTrue(self.problems(text, "hint"))
-        self.assertTrue(self.problems(text, "early signal"))
-        self.assertTrue(self.problems("This proves it.", "finding"))      # never allowed
-        self.assertTrue(self.problems("This is an early signal.", "hint"))
+        self.assertEqual(self.problems(text, comparison("finding", "same")), [])
+        self.assertTrue(self.problems(text, comparison("hint", "same")))
+        self.assertTrue(self.problems(text, comparison("early signal", "same")))
+        self.assertTrue(self.problems("This proves it.", comparison("finding", "same")))     # never allowed
+        self.assertTrue(self.problems("This is an early signal.", comparison("hint", "same")))
 
     def test_advice_markdown_and_label_line_are_rejected(self):
         self.assertTrue(self.problems("You should ask your doctor."))
@@ -190,28 +223,124 @@ class GuardTests(unittest.TestCase):
         self.assertTrue(self.problems("**Result** is fine."))
         self.assertTrue(self.problems("- first point\n- second point"))
         self.assertTrue(self.problems("Confidence: FINDING. Fine."))
-        self.assertTrue(self.problems("x" * (verdict.MAX_TEXT_CHARS + 1)))
         self.assertTrue(self.problems("   "))
+
+    def test_length_limit_is_about_eighty_words(self):
+        self.assertEqual(verdict.ASKED_WORDS, 80)
+        self.assertEqual(self.problems(" ".join(["nights"] * verdict.MAX_WORDS)), [])
+        self.assertTrue(any("too long" in p for p in self.problems(" ".join(["nights"] * (verdict.MAX_WORDS + 1)))))
+        # Few words but very long ones: the character limit catches it.
+        long_words = " ".join(["nightsnightsnights"] * 60)
+        self.assertLessEqual(len(long_words.split()), verdict.MAX_WORDS)
+        self.assertTrue(any("too long" in p for p in self.problems(long_words)))
+
+    def test_jargon_is_rejected(self):
+        for text in ("The backfilled answers matter.", "Non-backfilled answers differ.", "Only 5 nights in view.",
+                     "The JSON says so.", "The effect size is big.", "The ci95 is wide."):
+            self.assertTrue(any("terms the reader will not know" in p for p in self.problems(text)), text)
+        self.assertEqual(self.problems("It changes when the answers I filled in later are counted."), [])
+
+    def test_opposite_direction_words_when_caffeine_looks_worse(self):
+        worse = comparison("finding", "worse", "higher")
+        for text in ("Caffeine nights looked better.", "The score was higher.", "It improved a little.",
+                     "That is a boost.", "Better sleep on caffeine nights.", "It rose."):
+            self.assertTrue(any("direction words" in p for p in self.problems(text, worse)), text)
+        for text in ("More nights would help.", "A steady trend in your health could be mistaken for it.",
+                     "This is worth watching."):
+            self.assertEqual(self.problems(text, worse), [], text)
+
+    def test_opposite_direction_words_when_caffeine_looks_better(self):
+        better = comparison("finding", "better", "higher")
+        for text in ("Caffeine nights looked worse.", "The score dropped.", "It was lower.", "That is harmful.",
+                     "A decline in sleep.", "It fell."):
+            self.assertTrue(any("direction words" in p for p in self.problems(text, better)), text)
+
+    def test_the_opposite_word_depends_on_which_way_is_better(self):
+        # For heart rate lower is better. If caffeine nights look worse, "lower" is the opposite wording.
+        worse_hr = comparison("finding", "worse", "lower")
+        self.assertTrue(self.problems("The rate was lower.", worse_hr))
+        self.assertEqual(self.problems("The rate was higher.", worse_hr), [])      # restating, not contradicting
+        worse_score = comparison("finding", "worse", "higher")
+        self.assertTrue(self.problems("The score was higher.", worse_score))
+        self.assertEqual(self.problems("The score was lower.", worse_score), [])
+
+    def test_with_no_direction_every_direction_word_is_rejected(self):
+        for look in ("same", None):
+            c = comparison("hint", look, "higher")
+            for word in ("better", "worse", "higher", "lower", "improved", "dropped", "Better"):
+                self.assertTrue(self.problems(f"It was {word}.", c), f"{look}: {word}")
+            self.assertEqual(self.problems("This shows a link, not a cause."), [])
+
+
+class CoreSentenceTests(unittest.TestCase):
+    def test_caffeine_worse(self):
+        a = make_analysis("finding")
+        text = verdict.core_sentence(a)
+        self.assertIn("Sleep score was 15 points lower on nights with caffeine after 5pm, which is worse.", text)
+        self.assertRegex(text, r"The 95% range for the gap is [\d.]+ to [\d.]+ points lower\.")
+        self.assertIn("Based on 12 nights with caffeine after 5pm and 12 nights without.", text)
+
+    def test_caffeine_better(self):
+        text = verdict.core_sentence(make_analysis("better"))
+        self.assertIn("points higher on nights with caffeine after 5pm, which is better.", text)
+        self.assertRegex(text, r"The 95% range for the gap is [\d.]+ to [\d.]+ points higher\.")
+
+    def test_range_that_includes_zero_is_said_plainly(self):
+        text = verdict.core_sentence(make_analysis("noisy"))
+        self.assertRegex(text, r"runs from [\d.]+ points lower to [\d.]+ points higher")
+        self.assertIn("no difference at all cannot be ruled out", text)
+
+    def test_no_range_means_not_enough_data(self):
+        text = verdict.core_sentence(make_analysis("hint"))
+        self.assertIn("Not enough data yet for a 95% range.", text)
+        self.assertIn("Based on 1 night with caffeine", text)             # singular
+
+    def test_no_comparison_at_all(self):
+        for kind in ("empty", "all_tagged"):
+            text = verdict.core_sentence(make_analysis(kind))
+            self.assertTrue(text.startswith("Not enough data yet to compare sleep score."), kind)
+            for word in ("lower", "higher", "better", "worse"):
+                self.assertNotIn(word, text)
+
+    def test_no_difference(self):
+        self.assertIn("Sleep score was the same on both kinds of night.", verdict.core_sentence(make_analysis("none")))
+
+    def test_numbers_and_direction_come_straight_from_the_data(self):
+        for kind in ("hint", "finding", "better", "noisy", "none", "flip", "only_backfilled_caffeine", "empty"):
+            a = make_analysis(kind)
+            text = verdict.core_sentence(a)
+            self.assertEqual(verdict.unknown_numbers(text, verdict.to_payload(a)), [], kind)
+            diff = verdict.primary(a)["difference"]
+            if diff:
+                self.assertEqual(f"{abs(diff):g} points {'lower' if diff < 0 else 'higher'} on nights" in text, True, kind)
+                self.assertIn(f"which is {verdict.primary(a)['caffeine_nights_look']}", text)
+
+    def test_heart_rate_line(self):
+        self.assertIn("Lowest heart rate (secondary): 10 bpm higher on nights with caffeine, which is worse (finding).",
+                      verdict.heart_rate_line(make_analysis("finding")))
+        self.assertIn("lower on nights with caffeine, which is better", verdict.heart_rate_line(make_analysis("better")))
+        self.assertIn("the same on both kinds of night", verdict.heart_rate_line(make_analysis("none")))
+        self.assertIn("not enough data yet", verdict.heart_rate_line(make_analysis("empty")))
 
 
 class BuildMessageTests(unittest.TestCase):
-    def test_good_answer_is_used_and_label_line_comes_first(self):
-        for kind in ("hint", "finding", "none"):
+    def test_layout_confidence_then_code_result_then_ai_explanation(self):
+        for kind in ("hint", "finding", "better", "none", "noisy"):
             a = make_analysis(kind)
-            label = verdict.primary(a)["label"]
-            ci = verdict.primary(a)["ci95"]
-            text = good_text(a) if ci else "There are not enough nights yet to give a range."
-            api = FakeAPI(text)
+            api = FakeAPI(explanation(a))
             m = verdict.build_message(a, api)
-            self.assertEqual(m["source"], "ai", kind)
-            self.assertEqual(m["attempts"], 1)
-            first_line = m["text"].splitlines()[0]
-            self.assertTrue(first_line.startswith(f"Confidence: {label.upper()}"), first_line)
-            self.assertEqual(first_line, verdict.confidence_line(a))
+            self.assertEqual((m["source"], m["attempts"]), ("ai", 1), kind)
+            lines = m["text"].split("\n")
+            self.assertEqual(lines[0], verdict.confidence_line(a))
+            self.assertTrue(lines[0].startswith(f"Confidence: {verdict.primary(a)['label'].upper()}"))
+            self.assertEqual(lines[2], verdict.core_sentence(a))
+            self.assertEqual(lines[3], verdict.heart_rate_line(a))
+            self.assertEqual(lines[5], explanation(a))
+            self.assertIn("Explanation written by AI", lines[-1])
 
     def test_ai_cannot_change_the_label_line(self):
         a = make_analysis("hint")
-        api = FakeAPI("Confidence: FINDING. This is certain.", "Not enough nights yet to say anything firm.")
+        api = FakeAPI("Confidence: FINDING. This is certain.", explanation(a))
         m = verdict.build_message(a, api)
         self.assertTrue(m["text"].startswith("Confidence: HINT"))
         self.assertNotIn("FINDING", m["text"])
@@ -219,8 +348,8 @@ class BuildMessageTests(unittest.TestCase):
 
     def test_invented_number_triggers_one_retry_which_can_succeed(self):
         a = make_analysis("finding")
-        invented = good_text(a).replace("5pm", "5pm, a 37 point swing")
-        api = FakeAPI(invented, good_text(a))
+        invented = explanation(a, " There was a 37 point swing.")
+        api = FakeAPI(invented, explanation(a))
         m = verdict.build_message(a, api)
         self.assertEqual((m["source"], m["attempts"], len(api.calls)), ("ai", 2, 2))
         self.assertIn("37", m["problems"][0][0])
@@ -230,7 +359,7 @@ class BuildMessageTests(unittest.TestCase):
 
     def test_invented_number_twice_falls_back_to_the_plain_template(self):
         a = make_analysis("finding")
-        invented = good_text(a).replace("5pm", "5pm, a 37 point swing")
+        invented = explanation(a, " There was a 37 point swing.")
         api = FakeAPI(invented, invented, invented)
         m = verdict.build_message(a, api)
         self.assertEqual(len(api.calls), 2)                      # one try plus exactly one retry
@@ -238,6 +367,28 @@ class BuildMessageTests(unittest.TestCase):
         self.assertNotIn("37", m["text"])
         self.assertIn("without AI", m["text"])
         self.assertTrue(m["text"].startswith("Confidence: FINDING"))
+
+    def test_flipped_direction_is_rejected_then_retried(self):
+        a = make_analysis("finding")                              # caffeine nights are worse
+        flipped = "Caffeine nights had a better sleep score. " + explanation(a)
+        api = FakeAPI(flipped, explanation(a))
+        m = verdict.build_message(a, api)
+        self.assertEqual((m["source"], m["attempts"]), ("ai", 2))
+        self.assertIn("better", m["problems"][0][0])
+        self.assertIn("better", api.calls[1]["user"])            # the retry is told which word was wrong
+        self.assertNotIn("better sleep score", m["text"])
+
+    def test_flipped_direction_twice_falls_back_and_the_code_keeps_its_direction(self):
+        for kind, wrong, right in (("finding", "improved", "worse"), ("better", "dropped", "better"),
+                                   ("none", "lower", "same")):
+            a = make_analysis(kind)
+            bad = f"The score {wrong} on caffeine nights. " + explanation(a)
+            api = FakeAPI(bad, bad)
+            m = verdict.build_message(a, api)
+            self.assertEqual((m["source"], len(api.calls)), ("template", 2), kind)
+            self.assertNotIn(f"The score {wrong}", m["text"])
+            self.assertIn(right, m["text"])
+            self.assertTrue(m["text"].startswith("Confidence:"))
 
     def test_api_down_gives_the_plain_template(self):
         a = make_analysis("finding")
@@ -247,10 +398,11 @@ class BuildMessageTests(unittest.TestCase):
             self.assertEqual((m["source"], len(api.calls)), ("template", 2), repr(error))
             self.assertTrue(m["text"].startswith("Confidence: FINDING"))
             self.assertIn("the call failed", m["problems"][0][0])
+            self.assertIn("which is worse", m["text"])
 
     def test_down_then_up_recovers_on_the_retry(self):
         a = make_analysis("finding")
-        m = verdict.build_message(a, FakeAPI(ConnectionError("blip"), good_text(a)))
+        m = verdict.build_message(a, FakeAPI(ConnectionError("blip"), explanation(a)))
         self.assertEqual((m["source"], m["attempts"]), ("ai", 2))
 
     def test_the_error_text_never_reaches_the_message(self):
@@ -268,39 +420,65 @@ class BuildMessageTests(unittest.TestCase):
         del REAL_API_ATTEMPTS[before:]
 
 
+class PromptTests(unittest.TestCase):
+    def test_prompt_asks_for_short_everyday_text(self):
+        p = verdict.SYSTEM_PROMPT
+        self.assertIn("at most 80 words", p)
+        self.assertIn("everyday words", p)
+        self.assertIn("short sentences", p)
+        self.assertIn("the answers I filled in later", p)
+        self.assertIn("Do not say whether the result is better or worse", p)
+        self.assertIn("Do not repeat them", p)
+        self.assertIn("Use no numbers at all", p)
+        self.assertIn('Never use the words "finding" or "signal"', p)
+
+    def test_payload_does_not_hand_the_model_banned_words(self):
+        sent = json.dumps(verdict.to_payload(make_analysis("finding"))).lower()
+        self.assertNotIn("a_finding", sent)
+        self.assertIn("for_a_firm_result", sent)
+
+    def test_the_only_banned_terms_in_the_prompt_sit_in_the_never_use_list(self):
+        for line in verdict.SYSTEM_PROMPT.splitlines():
+            if "backfilled" in line.lower() or "in view" in line.lower():
+                self.assertIn("Never use these terms", line)
+
+
 class TemplateTests(unittest.TestCase):
     def test_template_only_contains_numbers_from_the_data(self):
-        for kind in ("hint", "finding", "none", "all_tagged", "flip", "only_backfilled_caffeine", "empty"):
+        for kind in ("hint", "finding", "better", "noisy", "none", "all_tagged", "flip",
+                     "only_backfilled_caffeine", "empty"):
             a = make_analysis(kind)
             text = verdict.fallback_text(a)
-            payload = verdict.to_payload(a)
-            self.assertEqual(verdict.unknown_numbers(text, payload), [], kind)
-            self.assertEqual(verdict.problems_with(text, payload, verdict.primary(a)["label"]), [], kind)
+            self.assertEqual(verdict.unknown_numbers(text, verdict.to_payload(a)), [], kind)
+            for jargon in ("backfill", "in view", "effect size", "json"):
+                self.assertNotIn(jargon, text.lower(), kind)
 
     def test_template_content(self):
-        a = make_analysis("finding")
-        text = verdict.fallback_text(a)
+        text = verdict.fallback_text(make_analysis("finding"))
+        self.assertIn("15 points lower", text)
+        self.assertIn("which is worse", text)
         self.assertIn("95% range", text)
-        self.assertIn("worse", text)
-        self.assertIn("association", text)
-        self.assertIn("lower", text)
+        self.assertIn("a link, not a cause", text)
+        self.assertIn("trend", text)
 
     def test_template_when_there_is_nothing_to_compare(self):
         for kind in ("all_tagged", "empty"):
             text = verdict.fallback_text(make_analysis(kind))
-            self.assertIn("not enough data yet", text)
+            self.assertIn("Not enough data yet", text)
+            self.assertNotIn("a link, not a cause", text)
 
     def test_template_mentions_flags_only_when_relevant(self):
         flip = verdict.fallback_text(make_analysis("flip"))
-        self.assertIn("after the fact changes", flip)
-        self.assertNotIn("after the fact", verdict.fallback_text(make_analysis("none")))
-        self.assertIn("dozing differs", verdict.fallback_text(make_analysis("finding")))
+        self.assertIn("answers I filled in later", flip)
+        self.assertNotIn("filled in later", verdict.fallback_text(make_analysis("none")))
+        self.assertIn("dozing differed", verdict.fallback_text(make_analysis("finding")))
         self.assertNotIn("dozing", verdict.fallback_text(make_analysis("none")))
 
     def test_message_fits_in_a_telegram_message(self):
-        for kind in ("hint", "finding", "flip"):
+        for kind in ("hint", "finding", "flip", "noisy"):
             a = make_analysis(kind)
             self.assertLess(len(verdict.build_message(a, FakeAPI(ConnectionError()))["text"]), 4096)
+            self.assertLess(len(verdict.build_message(a, FakeAPI(explanation(a)))["text"]), 4096)
 
 
 class WeeklyMessageTests(unittest.TestCase):
