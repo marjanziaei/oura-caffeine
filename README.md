@@ -55,20 +55,35 @@ flowchart TD
 | Daily, 14:00 | My laptop pulls a checked copy of the database (30 copies kept). |
 | Sunday, 13:30 | `analysis.py` compares nights with and without caffeine; `verdict.py` builds the message; it is sent to my chat and the path that wrote it is logged. |
 
-What the Sunday message looks like (made-up numbers):
+What the Sunday message looks like. This is the real output of the code on made-up data (3 nights with caffeine after 5pm, 11 without, one evening unanswered). The two sentences of AI explanation at the end are a fixed stand-in, because the AI's own wording varies; they pass through the real checker. A group of 3 nights is only a `HINT`, but the range is still shown, so you can see how wide it is.
 
 ```
 Last 7 evenings: kept the 5pm rule on 5 of 6 answered evenings; 1 unanswered.
 
 Confidence: HINT (sleep score, answers given on the evening only): a first look only; a group has too few nights to say more.
 
-Sleep score was 6 points lower on nights with caffeine after 5pm, which is worse. The 95% range for the gap runs from 15 points lower to 3 points higher, so no difference at all cannot be ruled out. Based on 3 nights with caffeine after 5pm and 11 without.
-Lowest heart rate (secondary): 2 bpm higher on nights with caffeine, which is worse (hint).
+Sleep score was 6.67 points lower on nights with caffeine after 5pm, which is worse. The 95% range for the gap runs from 13.79 points lower to 0.46 points higher, so no difference at all cannot be ruled out. Based on 3 nights with caffeine after 5pm and 11 nights without.
+Lowest heart rate (secondary): 3.73 bpm higher on nights with caffeine, which is worse (hint).
 
 This is only a first look, and more nights would help. This shows a link, not a cause, and a steady trend in your health over time could be mistaken for a caffeine effect.
 
 (Explanation written by AI; its numbers are checked against the data.)
 ```
+
+<details>
+<summary>If the AI is unavailable or fails its checks, the same facts come from a plain template</summary>
+
+```
+Last 7 evenings: kept the 5pm rule on 5 of 6 answered evenings; 1 unanswered.
+
+Confidence: HINT (sleep score, answers given on the evening only): a first look only; a group has too few nights to say more.
+
+Sleep score was 6.67 points lower on nights with caffeine after 5pm, which is worse. The 95% range for the gap runs from 13.79 points lower to 0.46 points higher, so no difference at all cannot be ruled out. Based on 3 nights with caffeine after 5pm and 11 nights without. Lowest heart rate (secondary): 3.73 bpm higher on nights with caffeine, which is worse (hint). Nights used: 14 of 15. 1 had no answer. This shows a link, not a cause, and a steady trend in your health over time could be mistaken for a caffeine effect.
+
+(Plain summary built from the data without AI: the AI explanation was unavailable or failed its checks.)
+```
+
+</details>
 
 Everything above the last paragraph is written by code straight from the data. Only the short explanation comes from the AI.
 
@@ -87,7 +102,7 @@ Also worth a look: [how the comparison is calculated and labelled](DECISIONS.md#
 
 ## Testing
 
-- **95 automated tests** (32 for the statistics and database, 63 for the message), about a second to run, no network.
+- **98 automated tests** (32 for the statistics and database, 66 for the message), about a second to run, no network. One of them checks that the sample message in this README is exactly what the code produces.
 - **A fake AI only.** The real API client is blocked during tests, and the test run fails outright if any test tries to reach it.
 - **The tests were themselves tested.** More than 40 times I deliberately broke the code (flipped a sign, switched the number check off, removed the retry, let a date into the payload, and so on) and confirmed that a test failed. A few survived at first, which showed real gaps: for example, a worked example with equal group sizes could not tell Welch's interval from the pooled one. Each gap became a new test.
 
@@ -120,7 +135,7 @@ This repository is public. It contains no data and no secrets; every number in t
 
 ## Setup
 
-Needs Python 3.12 or newer (tested on 3.12 and 3.14), an [Oura application](https://cloud.ouraring.com/oauth/applications) (redirect URI `http://localhost:8080/callback`), a Telegram bot from @BotFather, and an Anthropic API key.
+Needs Python 3.12 or newer (tested on 3.12 and 3.14), an application registered in the [Oura developer portal](https://developer.ouraring.com) (redirect URI `http://localhost:8080/callback`), a Telegram bot from @BotFather, and an Anthropic API key.
 
 ```bash
 git clone https://github.com/marjanziaei/oura-caffeine.git && cd oura-caffeine

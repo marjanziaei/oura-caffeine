@@ -669,6 +669,64 @@ class MessageLogTests(unittest.TestCase):
                              "VALUES ('x', 'ai', 1, 'hint', '[]', 2)")
 
 
+def readme_sample_analysis():
+    """The made-up data behind the sample message in README.md: 3 nights with caffeine, 11 without,
+    one evening unanswered, and a Sunday as the day the message is built."""
+    from datetime import date
+    as_of = date(2030, 2, 24)
+    assert as_of.weekday() == 6
+    day = lambda k: (as_of - timedelta(days=k)).isoformat()
+    caffeine = {13: (71, 59, 30), 10: (78, 60, 0), 2: (74, 58, 15)}          # evening k days back: score, hr, dozing
+    no_scores = [82, 79, 85, 77, 81, 84, 78, 83, 80, 76, 86]
+    no_hr = [55, 56, 54, 57, 55, 56, 53, 57, 55, 54, 56]
+    s = Scratch()
+    try:
+        rest = iter(zip(no_scores, no_hr))
+        for k in range(15, 0, -1):
+            if k in caffeine:
+                score, hr, nap = caffeine[k]
+                s.add("yes", score, hr=hr, nap=nap, evening_date=day(k))
+            elif k == 4:
+                s.add("unanswered", 80, hr=55, nap=0, evening_date=day(k))
+            else:
+                score, hr = next(rest)
+                s.add("no", score, hr=hr, nap=0, evening_date=day(k))
+        return s.run(since=day(15), as_of=as_of)
+    finally:
+        s.close()
+
+
+class ReadmeSampleTests(unittest.TestCase):
+    """The sample messages in README.md must be exactly what the code produces, so the README never shows
+    something the code does not do. If this fails, regenerate the two code blocks under 'What the Sunday
+    message looks like' from the real output."""
+    STAND_IN = ("This is only a first look, and more nights would help. This shows a link, not a cause, and a "
+                "steady trend in your health over time could be mistaken for a caffeine effect.")
+
+    @classmethod
+    def setUpClass(cls):
+        from pathlib import Path
+        cls.readme = (Path(__file__).resolve().parent / "README.md").read_text()
+        cls.analysis = readme_sample_analysis()
+
+    def test_the_data_is_what_the_readme_says(self):
+        c = verdict.primary(self.analysis)
+        self.assertEqual((c["caffeine"]["n"], c["no_caffeine"]["n"], c["label"]), (3, 11, "hint"))
+        self.assertIsNotNone(c["ci95"])                 # a range is shown even at the hint level
+
+    def test_the_normal_message_in_the_readme_is_real(self):
+        m = verdict.build_message(self.analysis, lambda system, user: self.STAND_IN)
+        self.assertEqual(m["source"], "ai")
+        self.assertIn(m["text"], self.readme)
+
+    def test_the_fallback_message_in_the_readme_is_real(self):
+        def down(system, user):
+            raise ConnectionError("down")
+        m = verdict.build_message(self.analysis, down)
+        self.assertEqual(m["source"], "template")
+        self.assertIn(m["text"], self.readme)
+
+
 class SafetyNetTests(unittest.TestCase):
     def test_the_real_api_was_never_reached_with_a_working_client(self):
         # Every attempt at the real client in this module was blocked and cleaned up by the tests that make it.
