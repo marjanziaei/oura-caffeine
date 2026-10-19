@@ -30,23 +30,29 @@ CREATE TABLE IF NOT EXISTS daily_log (
     -- 1 = entered by hand after the fact, not via the bot on the evening (see DECISIONS.md #8).
     backfilled         INTEGER NOT NULL DEFAULT 0 CHECK (backfilled IN (0, 1))
 );
+"""
 
--- Each night paired with the answer about the evening before it.
--- Evening D -> the night Oura labels D + 1. A missing answer shows as 'unanswered'.
-CREATE VIEW IF NOT EXISTS nights_with_caffeine AS
+
+# Each night paired with the answer about the evening before it (the one place the pairing rule
+# lives, see DECISIONS.md #5). Evening D -> the night Oura labels D + 1. A missing answer shows
+# as 'unanswered'. backfilled and pre_sleep_nap_minutes were added for the analysis (#12).
+VIEW_NAME = "nights_with_caffeine"
+VIEW_SQL = """
+CREATE VIEW nights_with_caffeine AS
 SELECT
     date(n.day, '-1 day')                        AS evening_date,
     COALESCE(l.caffeine_after_5pm, 'unanswered') AS caffeine_after_5pm,
     l.tag,
+    l.backfilled,
     n.day                                        AS sleep_day,
     n.sleep_score,
     n.lowest_heart_rate,
+    n.pre_sleep_nap_minutes,
     n.bedtime_start,
     n.bedtime_end
 FROM oura_nights n
 LEFT JOIN daily_log l ON l.evening_date = date(n.day, '-1 day');
 """
-
 
 # Columns added after a table was first created. CREATE TABLE IF NOT EXISTS leaves
 # existing tables alone, so connect() adds any of these that are missing.
@@ -73,5 +79,23 @@ def connect(path=DB_FILE):
         for name, sql_type in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+    ensure_view(conn)
     conn.commit()
     return conn
+
+
+def ensure_view(conn):
+    """Create the view, or replace it if an older version (missing columns) is in place.
+
+    Done in one transaction so a reader never sees the view missing. It holds no data.
+    """
+    wanted = {"evening_date", "caffeine_after_5pm", "tag", "backfilled", "sleep_day", "sleep_score",
+              "lowest_heart_rate", "pre_sleep_nap_minutes", "bedtime_start", "bedtime_end"}
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({VIEW_NAME})")}
+    if existing == wanted:
+        return
+    conn.commit()
+    conn.execute("BEGIN")
+    conn.execute(f"DROP VIEW IF EXISTS {VIEW_NAME}")
+    conn.execute(VIEW_SQL)
+    conn.commit()

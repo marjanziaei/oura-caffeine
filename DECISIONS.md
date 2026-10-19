@@ -187,3 +187,45 @@ All names and times below are generic examples.
 **How I verified it:** ran it for real; the copy passed the integrity check. Asking the backup key for a shell returned database bytes and never ran my command. The first launchd run exited with an error even though the copy succeeded: macOS `head` rejects a negative line count in the prune step. Fixed and re-run clean. The prune logic was tested on 33 empty fake files.
 
 **Not yet tested:** restoring from a copy onto a fresh server, and the job's behaviour after a laptop reboot.
+
+## 12. Weekly analysis: how caffeine nights are compared, and how sure the label is allowed to sound
+
+**Date:** 2026-10-19
+
+All numbers below are made-up examples, not my data.
+
+**What it is:** `analysis.py` compares nights with caffeine after 5pm against nights without, for sleep score and lowest heart rate, and prints JSON. It is calculations only: no AI model, no Telegram message. It opens the database read-only, so it cannot change anything. Not deployed to the server yet.
+
+**Which nights are used:** all evenings since 2026-10-01, from the `nights_with_caffeine` view. A night is left out, for one reason only, and the output counts each reason:
+- no caffeine answer (a missing row and an `unanswered` row count the same);
+- tagged alcohol, illness, travel or other;
+- **caffeine answered but the "anything unusual" follow-up wasn't.** This goes one step past what I asked for. NULL means "unknown", not "nothing unusual" (decision 7), so using the night would repeat the mistake of treating a missing answer as "no".
+
+A night with no score or heart rate is dropped from that metric only and counted.
+
+**View change:** `nights_with_caffeine` gained `backfilled` and `pre_sleep_nap_minutes`, so the analysis never repeats the evening-to-night pairing in its own query (decision 5 says it lives in one place). `connect()` replaces an older version of the view in one transaction. The view holds no data.
+
+**Size of a difference:** `d = (average with caffeine − average without) / pooled spread`, where the pooled spread is the usual night-to-night variation inside the two groups combined. Example: a 6-point drop in score when the spread is 4 points gives d = −1.5. It is measured inside the groups so the caffeine effect itself doesn't inflate "normal variation". With a 95% interval (Welch's t, which doesn't assume equal spread) for the difference in the metric's own units. The t values are computed in plain Python (no new dependency) and checked against published tables.
+
+**The label, first match wins:**
+
+| Condition | Label |
+|---|---|
+| either group has fewer than 5 nights | `hint` |
+| \|d\| ≥ 0.8, both groups ≥ 10 nights, and the interval excludes zero | `finding` |
+| \|d\| ≥ 0.5 | `early signal` |
+| otherwise | `no clear difference` |
+
+Why the extra conditions on `finding`: with 5 against 5 nights, a large \|d\| turns up by luck fairly often. An interval that straddles zero says the same thing from the other side. A large difference that fails them is reported as `early signal`, with the reason written out. The label is about size only; whether caffeine nights look better or worse is a separate field, and the JSON states for each metric which direction is better (higher score, lower heart rate).
+
+**Primary and secondary:** sleep score without backfilled answers is the primary comparison. The other three (heart rate, and both metrics with all answers) are secondary. Four comparisons means one can look interesting by chance, which is why only one is the headline. For each metric the output also says whether adding the backfilled answers changes the label or the direction.
+
+**Evening dozing:** average `pre_sleep_nap_minutes` per group. Flag `differs` at 10 or more minutes apart, with at least 5 measured nights per group; otherwise `similar` or `not enough data`. An unmeasured night is not counted as 0 minutes. The flag doesn't adjust the other results.
+
+**Last 7 days:** the 7 evenings before today, summarised (counts, left-out reasons, averages), not tested. Nearly always a `hint`.
+
+**Known limitation:** I'm trying to improve my health overall, so my numbers may drift upwards over time. If caffeine nights happen to cluster early or late in the period, that trend could be mistaken for a caffeine effect, or hide one. Nothing here removes a time trend. The JSON carries this caveat, and any text built from it should say so.
+
+**How I verified it:** 21 tests on made-up data in scratch databases: a week with one caffeine night; a clear difference; no difference; a week where every night is tagged; backfilled answers flipping the result (no difference on the evening, a clear one with late answers added); the label boundaries (just under and over each threshold); each way of being left out; and unmeasured dozing. I also deliberately broke the code five ways (the 10-night gate, the interval condition, the better/worse direction, the backfilled filter, the sign of the difference) and each was caught. My real database file was byte-identical before and after.
+
+**Not yet done:** running it on the server, and turning the JSON into text.
