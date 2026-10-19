@@ -280,19 +280,23 @@ def build_comparison(groups, metric, view):
 
 
 def build_backfill_check(comparisons):
+    """Does adding the backfilled answers change the result? Only answerable when both views have a
+    direction, i.e. both have nights in both groups; otherwise changes_result is null, not true."""
     by_id = {c["id"]: c for c in comparisons}
     checks = []
     for metric in METRICS:
         a, b = by_id[f"{metric}:all_answers"], by_id[f"{metric}:without_backfilled"]
+        comparable = a["caffeine_nights_look"] is not None and b["caffeine_nights_look"] is not None
         same_label = a["label"] == b["label"]
-        same_direction = a["caffeine_nights_look"] == b["caffeine_nights_look"]
+        same_direction = a["caffeine_nights_look"] == b["caffeine_nights_look"] if comparable else None
         checks.append({
             "metric": metric,
+            "comparable": comparable,
             "all_answers_label": a["label"],
             "without_backfilled_label": b["label"],
             "same_label": same_label,
             "same_direction": same_direction,
-            "changes_result": not (same_label and same_direction),
+            "changes_result": (not (same_label and same_direction)) if comparable else None,
         })
     return checks
 

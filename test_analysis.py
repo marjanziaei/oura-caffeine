@@ -197,7 +197,8 @@ class ScenarioTests(unittest.TestCase):
             self.assertEqual(heart["label"], "finding")
             self.assertAlmostEqual(heart["difference"], 10.0)
             self.assertEqual(heart["caffeine_nights_look"], "worse")   # a higher heart rate is worse
-        self.assertFalse(any(b["changes_result"] for b in r["backfill_check"]))
+        self.assertTrue(all(b["comparable"] for b in r["backfill_check"]))
+        self.assertTrue(all(b["changes_result"] is False for b in r["backfill_check"]))
 
     def test_no_difference(self):
         for score, hr in zip(spread(80, 12), spread(55, 12)):
@@ -223,6 +224,7 @@ class ScenarioTests(unittest.TestCase):
             self.assertIsNone(c["difference"])
             self.assertIsNone(c["ci95"])
         self.assertEqual(r["evening_dozing"][0]["flag"], "not enough data")
+        self.assertTrue(all(b["changes_result"] is None for b in r["backfill_check"]))
 
     def test_backfilled_answers_flip_the_result(self):
         # Answers given on the evening show no difference ...
@@ -242,10 +244,29 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(without["caffeine_nights_look"], "same")
         self.assertEqual(with_all["caffeine_nights_look"], "worse")
         check = next(b for b in r["backfill_check"] if b["metric"] == "sleep_score")
+        self.assertTrue(check["comparable"])
         self.assertTrue(check["changes_result"])
         self.assertFalse(check["same_label"])
         self.assertEqual(r["nights"]["backfilled_among_used"], 16)
         self.assertEqual(without["caffeine"]["nights"], 10)    # backfilled nights are really left out
+
+    def test_backfill_check_is_null_when_a_view_has_no_direction(self):
+        # The only caffeine nights are backfilled, so "without backfilled" has an empty caffeine group.
+        # That is "cannot compare", not "the result changed".
+        for _ in range(3):
+            self.s.add("no", 80)
+        self.s.add("yes", 90, backfilled=1)
+        self.s.add("no", 80, backfilled=1)
+        r = self.s.run()
+        self.assertIsNone(comp(r, "sleep_score", "without_backfilled")["caffeine_nights_look"])
+        for check in r["backfill_check"]:
+            self.assertFalse(check["comparable"])
+            self.assertIsNone(check["changes_result"])
+            self.assertIsNone(check["same_direction"])
+
+    def test_backfill_check_with_no_data_at_all(self):
+        r = self.s.run()
+        self.assertTrue(all(b["comparable"] is False and b["changes_result"] is None for b in r["backfill_check"]))
 
     def test_leaving_nights_out_and_saying_why(self):
         self.s.add("yes", 70)                                         # used
