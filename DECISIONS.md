@@ -133,3 +133,35 @@ All dates below are made-up examples.
 - Backfilled rows were only inserted where no row existed, so no bot answer was overwritten.
 
 **Why it matters:** An answer recalled days later is less reliable than one given that evening. And if I remember a night *because* I slept badly, the recalled answers aren't a random sample. Flagging them lets the analysis be run with and without them; if a result only holds when they're included, it's not a result I trust.
+
+## 9. The project moves from my laptop to a rented server in Canada
+
+**Date:** 2026-10-19
+
+All names, paths and times below are generic examples, not my real setup.
+
+**What happened:** The bot only works while the laptop is awake, and it had been off for days, so many evenings went unanswered. I moved everything to a small rented OVH server, in a data centre in Canada.
+
+**Decisions:**
+- **Location:** Canada, so the data now sits outside the EU. That is a change from "only on my laptop" and is reflected in `PRIVACY.md`. (The reason for picking Canada isn't recorded here yet.)
+- **SSH:** key login only. A drop-in config file named `00-hardening.conf` turns off passwords and root login. The `00-` prefix matters: sshd uses the first value it reads, and the provider's own drop-in files would otherwise win. The firewall (`ufw`) allows only SSH in. The bot polls Telegram from the inside, so it needs no inbound port. Automatic security updates are on.
+- **Checked before closing the old session:** a fresh key login worked, and password login and root login were both refused.
+- **Services:** the bot is a systemd service (`Restart=always`, enabled at boot). I killed it on purpose to check it comes back. I did not reboot the server to test boot start.
+- **Sync schedule:** a systemd timer at 13:00 and 18:00, written with `Europe/Prague` inside the timer itself (`OnCalendar=*-*-* 13:00:00 Europe/Prague`), not left to the server's clock. The server runs on UTC. 13:00 suits a late riser after the ring has synced to the app, and 18:00 catches a late sync. The sync is an upsert, so running twice is harmless. `Persistent=true` runs a missed sync after downtime.
+- **The bot's 21:00 was already tied to Prague time in the code (decision 7).** On the new server it showed 21:00 CEST = 19:00 UTC now, and 21:00 CET = 20:00 UTC after the clocks change.
+- **Oura token:** refresh tokens are single use, so only one machine may hold a live one (see decision 2). Order of steps: stop everything on the laptop, copy the token file, compare checksums, rename the laptop's copy to `.oura_tokens.json.moved-to-server`, and only then start anything on the server. A laptop script now stops with "no saved tokens" instead of spending the token. The Telegram bot token is the same: two machines polling it would fight, so the laptop must not run the bot again.
+- **Files copied by hand** (not in git): `.env`, the token file and the database, then set to owner-only (0600), in a folder only the owner can open (0700).
+
+**Open:** the database has no backup yet. Options are being compared.
+
+## 10. First connection: the server's host key was accepted on first use
+
+**Date:** 2026-10-19
+
+**What happened:** The first time I connected, SSH showed the server's host key fingerprint and I accepted it without a second check.
+
+**Decision:** I accepted the risk. I saw the fingerprint over one network only and did not compare it against a second source such as the provider's panel. For a brand-new server with nothing on it yet, I judged that acceptable.
+
+**What the risk is:** if someone had intercepted that first connection, my laptop would trust their key. The server would then be an impostor and could capture what I sent to it. Later connections would not reveal it, because SSH only warns when the key *changes*.
+
+**Why it matters / how to undo it:** the first thing sent after that was my public key (harmless), but later I sent real secrets to the server. If I ever want certainty, I can compare the fingerprint in the provider's panel with the one in `~/.ssh/known_hosts` (`ssh-keygen -F <host> -l`). If they differ, I would rotate the Telegram bot token and the Oura client secret and re-run `login.py`.
